@@ -97,6 +97,59 @@ function donut(slices, total) {
     <text x="90" y="84" class="donut-k">মোট</text><text x="90" y="106" class="donut-v">${money(total)}</text></svg>`;
 }
 
+// মসৃণ রেখা (Catmull-Rom → Bezier), নিচের সীমা ছাড়িয়ে যায় না
+function smoothPath(pts, floorY) {
+  if (pts.length < 2) return '';
+  let d = `M${pts[0][0]},${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, Math.min(floorY, p1[1] + (p2[1] - p0[1]) / 6)];
+    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, Math.min(floorY, p2[1] - (p3[1] - p1[1]) / 6)];
+    d += ` C${c1[0].toFixed(1)},${c1[1].toFixed(1)} ${c2[0].toFixed(1)},${c2[1].toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  return d;
+}
+
+function areaChart(daily, t, C) {
+  const W = Math.round(Math.max(300, Math.min(1100, ($app.clientWidth || 720) - 40))), H = innerWidth < 760 ? 190 : 230, L = 8, R = 8, T = 14, B = 26, iw = W - L - R, ih = H - T - B;
+  const shown = daily.filter(d => d.date <= t);
+  const max = Math.max(1, ...daily.map(d => d.total)) * 1.12;
+  const x = i => L + (daily.length === 1 ? iw / 2 : i * iw / (daily.length - 1));
+  const y = v => T + ih - v / max * ih;
+  const pts = shown.map((d, i) => [x(i), y(d.total)]);
+  const line = smoothPath(pts, T + ih);
+  const area = pts.length > 1 ? `${line} L${pts[pts.length - 1][0]},${T + ih} L${pts[0][0]},${T + ih} Z` : '';
+  const ti = daily.findIndex(d => d.date === t);
+  const step = iw / Math.max(1, daily.length - 1);
+  return `<svg viewBox="0 0 ${W} ${H}" class="area" role="img" aria-label="দৈনিক খরচের চার্ট">
+    <defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a78d6" stop-opacity=".28"/><stop offset="1" stop-color="#2a78d6" stop-opacity="0"/></linearGradient></defs>
+    ${[0.25, 0.5, 0.75, 1].map(f => `<line x1="${L}" x2="${W - R}" y1="${y(max / 1.12 * f)}" y2="${y(max / 1.12 * f)}" class="gl"/>`).join('')}
+    <line x1="${L}" x2="${W - R}" y1="${T + ih}" y2="${T + ih}" class="base"/>
+    ${area ? `<path d="${area}" fill="url(#ag)"/><path d="${line}" class="ln"/>` : ''}
+    ${ti >= 0 && pts[ti] ? `<circle cx="${pts[ti][0]}" cy="${pts[ti][1]}" r="5" class="today-dot"/>` : ''}
+    ${daily.map((d, i) => `<g class="hit" data-tip="${bnDate(d.date)}: ${money(d.total)} ${C}" data-href="#/expenses?date=${d.date}">
+      <rect x="${x(i) - step / 2}" y="${T}" width="${step}" height="${ih}" fill="transparent"/>
+      ${d.date <= t ? `<line x1="${x(i)}" x2="${x(i)}" y1="${T}" y2="${T + ih}" class="xh"/><circle cx="${x(i)}" cy="${y(d.total)}" r="4.5" class="hd"/>` : ''}</g>`).join('')}
+    ${daily.map((d, i) => (+d.date.slice(8)) % 5 === 0 || i === 0 ? `<text x="${x(i)}" y="${H - 6}" class="xl">${+d.date.slice(8)}</text>` : '').join('')}
+  </svg>`;
+}
+
+function sparkline(daily, t) {
+  let run = 0; const v = daily.filter(d => d.date <= t).map(d => (run += d.total)); // মাসের জমতে থাকা খরচ
+  if (v.length < 2) return '';
+  const W = 300, H = 60, max = Math.max(1, ...v);
+  const pts = v.map((n, i) => [i * W / (v.length - 1), H - 4 - n / max * (H - 10)]);
+  const ln = smoothPath(pts, H - 4);
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="spark" aria-hidden="true">
+    <defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>
+    <path d="${ln} L${W},${H} L0,${H} Z" fill="url(#sg)"/><path d="${ln}" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+const greeting = () => {
+  const hr = +new Intl.DateTimeFormat('en-US', { timeZone: CFG.TIMEZONE, hour: 'numeric', hour12: false }).format(new Date()) % 24;
+  return hr < 5 ? 'শুভ রাত্রি' : hr < 12 ? 'শুভ সকাল' : hr < 16 ? 'শুভ দুপুর' : hr < 18 ? 'শুভ বিকাল' : hr < 21 ? 'শুভ সন্ধ্যা' : 'শুভ রাত্রি';
+};
+
 pages.dashboard = async () => {
   const p = params();
   const month = isMonth(p.get('month')) ? p.get('month') : thisMonth();
@@ -112,12 +165,12 @@ pages.dashboard = async () => {
     const d = `${month}-${String(i + 1).padStart(2, '0')}`;
     return { date: d, total: total(rows.filter(r => r.expense_date === d)) };
   });
-  const maxDaily = Math.max(1, ...daily.map(d => d.total));
-  const pastDays = isCur ? daily.filter(d => d.date <= t).length : daily.length;
+  const lastDay = isCur ? t : daily[daily.length - 1].date;
+  const pastDays = daily.filter(d => d.date <= lastDay).length;
   const peak = daily.reduce((a, b) => (b.total > a.total ? b : a), daily[0]);
   const C = h(CFG.CURRENCY);
+  const mChange = prevMonth ? Math.round((monthTotal - prevMonth) / prevMonth * 100) : null;
 
-  // খাতের হিসাব: সক্রিয় সব খাত দেখাবে, খরচ না থাকলেও
   const catStats = cats.filter(c => c.active || rows.some(r => r.category_id === c.id)).map(c => {
     const cr = rows.filter(r => r.category_id === c.id);
     return { id: c.id, name: c.name, icon: catIcon(c), color: catColor(cats, c.id), total: total(cr), count: cr.length,
@@ -131,10 +184,12 @@ pages.dashboard = async () => {
   }
   const recent = rows.slice(0, 6);
   const catById = id => cats.find(c => c.id === id);
+  const firstName = (ME.full_name || '').split(/[\s(]/)[0];
+  const longToday = new Date(t + 'T00:00:00').toLocaleDateString('bn-BD', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
   $app.innerHTML = `${flashHtml()}
   <div class="dash-head">
-    <div><p class="eyebrow">${h(CFG.COMPANY)}</p><h1>খরচের ড্যাশবোর্ড</h1></div>
+    <div><p class="eyebrow">${longToday}</p><h1>${greeting()}, ${h(firstName)} 👋</h1></div>
     <div class="month-nav">
       <a class="icon-btn" href="#/?month=${shiftMonth(month, -1)}" aria-label="আগের মাস">‹</a>
       <label class="month-pick"><span>${bnMonth(month)}</span><input type="month" id="m" value="${month}"></label>
@@ -142,47 +197,58 @@ pages.dashboard = async () => {
     </div>
   </div>
 
-  <div class="kpis">
-    <div class="kpi kpi-hero">
-      <span class="kpi-k">${isCur ? 'এই মাসের' : bnMonth(month) + '-এর'} মোট খরচ</span>
-      <b class="kpi-v">${money(monthTotal)} <small>${C}</small></b>
-      ${delta(monthTotal, prevMonth, 'আগের মাসের তুলনায়')}
-      <span class="kpi-sub">${rows.length}টি এন্ট্রি · ${withSpend.length}টি খাতে</span>
+  <section class="hero">
+    <div class="hero-top">
+      <div>
+        <span class="hero-k">${isCur ? 'এই মাসের' : bnMonth(month) + '-এর'} মোট খরচ</span>
+        <div class="hero-v">${money(monthTotal)} <small>${C}</small></div>
+        ${mChange === null ? '' : `<span class="chip ${mChange > 0 ? 'up' : 'down'}">${mChange > 0 ? '↑' : '↓'} ${Math.abs(mChange)}% আগের মাসের তুলনায়</span>`}
+      </div>
+      <a class="hero-add" href="#/new" aria-label="খরচ যোগ করুন">＋</a>
     </div>
-    <div class="kpi"><span class="kpi-ico">📅</span><span class="kpi-k">আজকের খরচ</span>
-      <b class="kpi-v">${money(todayTotal)} <small>${C}</small></b>${delta(todayTotal, yTotal, 'গতকালের তুলনায়')}</div>
-    <div class="kpi"><span class="kpi-ico">📊</span><span class="kpi-k">দৈনিক গড়</span>
-      <b class="kpi-v">${money(pastDays ? monthTotal / pastDays : 0)} <small>${C}</small></b>
-      <em class="delta">সর্বোচ্চ: ${peak.total ? bnDate(peak.date) + ' · ' + money(peak.total) : '—'}</em></div>
-    <div class="kpi"><span class="kpi-ico">🏦</span><span class="kpi-k">সর্বমোট খরচ (শুরু থেকে)</span>
-      <b class="kpi-v">${money(allTime)} <small>${C}</small></b><em class="delta">${months.length}টি মাসের হিসাব</em></div>
+    ${sparkline(daily, lastDay)}
+    <div class="hero-stats">
+      <div><span>আজ</span><b>${money(todayTotal)}</b></div>
+      <div><span>দৈনিক গড়</span><b>${money(pastDays ? monthTotal / pastDays : 0)}</b></div>
+      <div><span>এন্ট্রি</span><b>${rows.length}টি</b></div>
+    </div>
+  </section>
+
+  <div class="tiles">
+    <div class="tile"><span class="tile-ico" style="--c:#eb6834">📅</span><div><span class="tile-k">আজকের খরচ</span><b>${money(todayTotal)} <small>${C}</small></b>${delta(todayTotal, yTotal, 'গতকালের তুলনায়')}</div></div>
+    <div class="tile"><span class="tile-ico" style="--c:#1baf7a">🔥</span><div><span class="tile-k">সবচেয়ে বেশি খরচের দিন</span><b>${peak.total ? money(peak.total) : '0.00'} <small>${C}</small></b><em class="delta">${peak.total ? bnDate(peak.date) : '—'}</em></div></div>
+    <div class="tile"><span class="tile-ico" style="--c:#6250d6">🏦</span><div><span class="tile-k">শুরু থেকে সর্বমোট</span><b>${money(allTime)} <small>${C}</small></b><em class="delta">${months.length}টি মাসের হিসাব</em></div></div>
   </div>
 
+  <section class="panel">
+    <div class="sec-head"><h2>দৈনিক খরচের ধারা</h2><span class="muted small">${bnMonth(month)}</span></div>
+    ${areaChart(daily, lastDay, C)}
+    <p class="muted small hint">চার্টে আঙুল রাখলে সেই দিনের খরচ দেখাবে, চাপলে সেই দিনের তালিকা খুলবে।</p>
+  </section>
+
   <section class="sec">
-    <div class="sec-head"><h2>খাত অনুযায়ী খরচ</h2><a href="#/expenses?month=${month}" class="small">সব খরচ দেখুন →</a></div>
+    <div class="sec-head"><h2>খাত অনুযায়ী</h2><a href="#/expenses?month=${month}" class="small">সব দেখুন →</a></div>
     <div class="cat-grid">
       ${catStats.map(c => `<a class="cat-card" href="#/expenses?month=${month}&category=${c.id}" style="--c:${c.color}">
-        <div class="cat-top"><span class="cat-ico">${h(c.icon)}</span><span class="cat-share">${pct(c.total, monthTotal)}%</span></div>
+        <div class="cat-top"><span class="cat-ico">${h(c.icon)}</span>
+          <svg class="ring" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="15" class="ring-bg"/><circle cx="18" cy="18" r="15" class="ring-fg" stroke-dasharray="${(pct(c.total, monthTotal) / 100 * 94.25).toFixed(1)} 94.25"/></svg>
+          <span class="ring-t">${pct(c.total, monthTotal)}%</span></div>
         <div class="cat-name">${h(c.name)}</div>
         <div class="cat-amt">${money(c.total)} <small>${C}</small></div>
-        <div class="cat-bar"><i style="width:${pct(c.total, monthTotal)}%"></i></div>
-        <div class="cat-meta"><span>আজ: <b>${money(c.today)}</b></span><span>${c.count}টি এন্ট্রি</span></div>
+        <div class="cat-meta"><span>আজ ${money(c.today)}</span><span>${c.count}টি</span></div>
       </a>`).join('') || '<p class="muted">কোনো খাত নেই। এডমিন "খাত" পাতা থেকে যোগ করুন।</p>'}
     </div>
   </section>
 
   <div class="chart-row">
-    <section class="card chart-card">
-      <div class="sec-head"><h2>দৈনিক খরচ</h2><span class="muted small">সর্বোচ্চ দিন ${money(maxDaily === 1 && !peak.total ? 0 : maxDaily)} ${C}</span></div>
-      <div class="vbars" role="img" aria-label="${bnMonth(month)} মাসের দৈনিক খরচ">
-        ${[1, 0.5].map(f => `<div class="grid-line" style="bottom:${f * 100}%"><span>${money(maxDaily * f).replace(/\.00$/, '')}</span></div>`).join('')}
-        ${daily.map(d => `<a class="vbar ${d.date === t ? 'today' : ''} ${d.date > t ? 'future' : ''}" href="#/expenses?date=${d.date}"
-          data-tip="${bnDate(d.date)}: ${money(d.total)} ${C}"><i style="height:${(d.total / maxDaily * 100).toFixed(1)}%"></i></a>`).join('')}
-      </div>
-      <div class="vbar-axis">${daily.map(d => `<span>${+d.date.slice(8) % 5 === 0 || d.date.endsWith('-01') ? +d.date.slice(8) : ''}</span>`).join('')}</div>
-      <p class="muted small">যেকোনো দিনের বারে চাপলে সেই দিনের খরচ দেখাবে। কমলা বার = আজ।</p>
+    <section class="panel">
+      <div class="sec-head"><h2>সাম্প্রতিক খরচ</h2><a href="#/expenses?month=${month}" class="small">সব দেখুন →</a></div>
+      <ul class="recent">${recent.map(r => { const c = catById(r.category_id); return `<li>
+        <span class="r-ico" style="--c:${catColor(cats, r.category_id)}">${h(catIcon(c || r.category))}</span>
+        <div class="r-mid"><b>${h(r.description || catName(r))}</b><span>${h(catName(r))} · ${h(userName(r))} · ${bnDate(r.expense_date)}</span></div>
+        <b class="r-amt">−${money(r.amount)}</b></li>`; }).join('') || '<li class="muted">এই মাসে এখনো কোনো খরচ নেই।</li>'}</ul>
     </section>
-    <section class="card chart-card">
+    <section class="panel">
       <div class="sec-head"><h2>খরচের ভাগ</h2></div>
       <div class="donut-wrap">${donut(slices, monthTotal)}
         <ul class="legend">${slices.map(s => `<li><i style="background:${s.color}"></i><span>${h(s.icon)} ${h(s.name)}</span><b>${pct(s.total, monthTotal)}%</b></li>`).join('')}</ul>
@@ -191,23 +257,19 @@ pages.dashboard = async () => {
   </div>
 
   <div class="chart-row">
-    <section class="card">
-      <div class="sec-head"><h2>সাম্প্রতিক খরচ</h2><a href="#/new" class="small">+ নতুন খরচ</a></div>
-      <ul class="recent">${recent.map(r => { const c = catById(r.category_id); return `<li>
-        <span class="r-ico" style="--c:${catColor(cats, r.category_id)}">${h(catIcon(c || r.category))}</span>
-        <div class="r-mid"><b>${h(r.description || catName(r))}</b><span>${h(catName(r))} · ${h(userName(r))} · ${bnDate(r.expense_date)}</span></div>
-        <b class="r-amt">${money(r.amount)}</b></li>`; }).join('') || '<li class="muted">এই মাসে এখনো কোনো খরচ নেই।</li>'}</ul>
-    </section>
-    <section class="card">
+    <section class="panel">
       <div class="sec-head"><h2>মাসভিত্তিক মোট</h2></div>
       ${(() => { const ms = months.slice(0, 6), mx = Math.max(1, ...ms.map(m => Number(m.total)));
         return ms.map(m => `<a class="mrow ${m.month === month ? 'on' : ''}" href="#/?month=${m.month}"><span>${bnMonth(m.month)}</span>
           <div class="mbar"><i style="width:${(Number(m.total) / mx * 100).toFixed(1)}%"></i></div><b>${money(m.total)}</b></a>`).join('') || '<p class="muted">এখনো কোনো খরচ নেই।</p>'; })()}
-      <h2 class="mt">সদস্য অনুযায়ী</h2>
-      ${sumBy(rows, userName).map(c => `<div class="urow"><span>${h(c.name)}</span><b>${money(c.total)}</b></div>`).join('') || '<p class="muted">—</p>'}
+    </section>
+    <section class="panel">
+      <div class="sec-head"><h2>সদস্য অনুযায়ী</h2></div>
+      ${sumBy(rows, userName).map(c => `<div class="urow"><span class="avatar">${h(c.name.trim().charAt(0))}</span><span>${h(c.name)}</span><b>${money(c.total)}</b></div>`).join('') || '<p class="muted">—</p>'}
     </section>
   </div>`;
   document.getElementById('m').onchange = e => e.target.value && go('#/?month=' + e.target.value);
+  $app.querySelectorAll('.hit').forEach(g => g.addEventListener('click', () => go(g.dataset.href)));
   bindTips();
 };
 
@@ -541,18 +603,48 @@ const ROUTES = [
   [/^\/new$/, () => pages.form(null)],
   [/^\/edit\/(\d+)$/, m => pages.form(Number(m[1]))],
   [/^\/password$/, () => pages.password()],
+  [/^\/more$/, () => pages.more()],
   [/^\/reports$/, () => pages.reports(), true],
   [/^\/print$/, () => pages.print(), true],
   [/^\/members$/, () => pages.members(), true],
   [/^\/categories$/, () => pages.categories(), true],
 ];
 
+const ICONS = {
+  home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+};
+const svgI = k => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>`;
+
 function renderNav(route) {
   const link = (href, text, cls = '') => `<a href="${href}" class="${cls} ${route === href.slice(1) ? 'on' : ''}">${text}</a>`;
   document.getElementById('nav').innerHTML = link('#/', 'ড্যাশবোর্ড') + link('#/expenses', 'সব খরচ') + link('#/new', '+ খরচ যোগ', 'btn-nav') +
     (isAdmin() ? link('#/reports', 'রিপোর্ট') + link('#/members', 'সদস্য') + link('#/categories', 'খাত') : '');
   document.getElementById('me-name').innerHTML = h(ME.full_name) + (isAdmin() ? ' <span class="tag">এডমিন</span>' : '');
+  const tab = (href, icon, text, on) => `<a href="${href}" class="${on ? 'on' : ''}">${svgI(icon)}<span>${text}</span></a>`;
+  const moreOn = ['/more', '/members', '/categories', '/password'].includes(route);
+  document.getElementById('tabbar').innerHTML =
+    tab('#/', 'home', 'হোম', route === '/') + tab('#/expenses', 'list', 'খরচ', route === '/expenses') +
+    `<a href="#/new" class="tab-add ${route === '/new' ? 'on' : ''}" aria-label="খরচ যোগ">${svgI('plus')}</a>` +
+    (isAdmin() ? tab('#/reports', 'chart', 'রিপোর্ট', route === '/reports' || route === '/print') : tab('#/password', 'chart', 'পাসওয়ার্ড', route === '/password')) +
+    tab('#/more', 'more', 'আরও', moreOn);
 }
+
+pages.more = async () => {
+  const item = (href, ico, title, sub) => `<a class="more-item" href="${href}"><span class="more-ico">${ico}</span><span><b>${title}</b><small>${sub}</small></span><span class="chev">›</span></a>`;
+  $app.innerHTML = `${flashHtml()}
+  <div class="profile-card"><span class="avatar lg">${h((ME.full_name || '?').trim().charAt(0))}</span>
+    <div><b>${h(ME.full_name)}</b><small>${isAdmin() ? 'এডমিন' : 'সদস্য'} · ${h(CFG.COMPANY)}</small></div></div>
+  <div class="more-list">
+    ${isAdmin() ? item('#/reports', '📊', 'রিপোর্ট', 'দৈনিক/মাসিক Excel ও PDF') + item('#/members', '👥', 'সদস্য', 'সদস্য যোগ, পাসওয়ার্ড বদল') + item('#/categories', '🏷️', 'খাত', 'খাত যোগ, আইকন, বন্ধ করা') : ''}
+    ${item('#/password', '🔑', 'পাসওয়ার্ড পরিবর্তন', 'নিজের পাসওয়ার্ড বদলান')}
+  </div>
+  <button class="btn ghost full" id="lo">লগআউট</button>`;
+  document.getElementById('lo').onclick = () => document.getElementById('logout').click();
+};
 
 async function render() {
   if (!ME) return;
@@ -582,6 +674,8 @@ async function boot() {
     flash('err', 'আপনার অ্যাকাউন্ট সক্রিয় নেই। এডমিনের সাথে যোগাযোগ করুন।');
   }
   top.classList.toggle('hidden', !ME);
+  document.getElementById('tabbar').classList.toggle('hidden', !ME);
+  document.body.classList.toggle('authed', !!ME);
   if (!ME) return pages.login();
   render();
 }
