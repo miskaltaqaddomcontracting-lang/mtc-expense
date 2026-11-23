@@ -29,6 +29,7 @@ const errText = e => {
   if (/row-level security/i.test(m)) return 'এই কাজের অনুমতি আপনার নেই।';
   if (/duplicate key/i.test(m)) return 'এই নাম আগে থেকেই আছে।';
   if (/admin_(create_user|set_password|list_users)/i.test(m)) return NEED_SQL;
+  if (/delete_expense|deleted_at|deleted_by/i.test(m)) return NEED_SQL_DEL;
   if (/icon/i.test(m) && /column|schema/i.test(m)) return 'আইকন সেভ করতে Supabase-এ একবার এই SQL চালান: alter table public.categories add column if not exists icon text;';
   return m;
 };
@@ -357,8 +358,7 @@ pages.expenses = async () => {
     const r = rows.find(x => String(x.id) === b.dataset.del);
     try {
       await api.deleteExpense(r.id);
-      if (r.receipt_path) api.removeReceipt(r.receipt_path);
-      flash('ok', 'খরচ মুছে ফেলা হয়েছে।');
+      flash('ok', isAdmin() ? 'খরচটি "মুছে ফেলা খরচ" তালিকায় সরানো হয়েছে।' : 'খরচ মুছে ফেলা হয়েছে।');
     } catch (e) { flash('err', errText(e)); }
     render();
   });
@@ -541,6 +541,7 @@ pages.print = async () => {
 // ---------- এডমিন: সদস্য ও খাত ----------
 const toLoginEmail = u => { u = u.trim().toLowerCase(); return u.includes('@') ? u : u + '@' + CFG.LOGIN_EMAIL_DOMAIN; };
 const shortLogin = e => e && e.endsWith('@' + CFG.LOGIN_EMAIL_DOMAIN) ? e.slice(0, -CFG.LOGIN_EMAIL_DOMAIN.length - 1) : (e || '');
+const NEED_SQL_DEL = 'এই সুবিধা চালু করতে Supabase SQL Editor-এ "supabase/deleted-history.sql" ফাইলটা একবার চালাতে হবে।';
 const NEED_SQL = 'এই সুবিধা চালু করতে Supabase SQL Editor-এ "supabase/admin-users.sql" ফাইলটা একবার চালাতে হবে।';
 
 pages.members = async () => {
@@ -648,6 +649,7 @@ const ROUTES = [
   [/^\/print$/, () => pages.print(), true],
   [/^\/members$/, () => pages.members(), true],
   [/^\/categories$/, () => pages.categories(), true],
+  [/^\/deleted$/, () => pages.deleted(), true],
 ];
 
 const ICONS = {
@@ -662,10 +664,10 @@ const svgI = k => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>
 function renderNav(route) {
   const link = (href, text, cls = '') => `<a href="${href}" class="${cls} ${route === href.slice(1) ? 'on' : ''}">${text}</a>`;
   document.getElementById('nav').innerHTML = link('#/', 'ড্যাশবোর্ড') + link('#/expenses', 'সব খরচ') + link('#/new', '+ খরচ যোগ', 'btn-nav') +
-    (isAdmin() ? link('#/reports', 'রিপোর্ট') + link('#/members', 'সদস্য') + link('#/categories', 'খাত') : '');
+    (isAdmin() ? link('#/reports', 'রিপোর্ট') + link('#/members', 'সদস্য') + link('#/categories', 'খাত') + link('#/deleted', 'মুছে ফেলা') : '');
   document.getElementById('me-name').innerHTML = h(ME.full_name) + (isAdmin() ? ' <span class="tag">এডমিন</span>' : '');
   const tab = (href, icon, text, on) => `<a href="${href}" class="${on ? 'on' : ''}">${svgI(icon)}<span>${text}</span></a>`;
-  const moreOn = ['/more', '/members', '/categories', '/password'].includes(route);
+  const moreOn = ['/more', '/members', '/categories', '/password', '/deleted'].includes(route);
   document.getElementById('tabbar').innerHTML =
     tab('#/', 'home', 'হোম', route === '/') + tab('#/expenses', 'list', 'খরচ', route === '/expenses') +
     `<a href="#/new" class="tab-add ${route === '/new' ? 'on' : ''}" aria-label="খরচ যোগ">${svgI('plus')}</a>` +
@@ -673,13 +675,55 @@ function renderNav(route) {
     tab('#/more', 'more', 'আরও', moreOn);
 }
 
+pages.deleted = async () => {
+  let rows;
+  try { rows = await api.deletedExpenses(); }
+  catch (e) { $app.innerHTML = `${pageHead('মুছে ফেলা খরচ', 'সদস্যরা যেসব খরচ মুছেছে')}<div class="flash err">${h(errText(e))}</div>`; return; }
+  const cats = await api.categories(), C = h(CFG.CURRENCY);
+  const when = ts => { const d = new Date(ts); return bnDate(d.toLocaleDateString('en-CA', { timeZone: CFG.TIMEZONE })) + ', ' + d.toLocaleTimeString('bn-BD', { timeZone: CFG.TIMEZONE, hour: 'numeric', minute: '2-digit' }); };
+  $app.innerHTML = `${flashHtml()}
+  ${pageHead('মুছে ফেলা খরচ', 'এগুলো কোনো হিসাব বা রিপোর্টে গোনা হয় না। শুধু এডমিন দেখতে পান।')}
+  <section class="sum-hero"><div><span>মুছে ফেলা মোট</span><b>${money(total(rows))} <small>${C}</small></b></div>
+    <div class="sum-meta"><span>${rows.length}</span>টি এন্ট্রি</div></section>
+  ${rows.length ? `<ul class="tx-list">${rows.map(r => { const c = cats.find(x => x.id === r.category_id); return `<li class="tx del-tx">
+    <span class="r-ico" style="--c:${catColor(cats, r.category_id)}">${h(catIcon(c || r.category))}</span>
+    <div class="r-mid"><b>${h(r.description || catName(r))}</b><span>${bnDate(r.expense_date)} · ${h(catName(r))} · ${h(userName(r))}</span>
+      <span class="del-by">🗑️ ${h(r.deleter?.full_name || '?')} মুছেছেন · ${when(r.deleted_at)}</span></div>
+    <div class="tx-right"><b class="r-amt">${money(r.amount)}</b>
+      <div class="tx-actions">
+        ${r.receipt_path ? `<button class="ia" data-receipt="${h(r.receipt_path)}" title="রসিদ দেখুন">🧾</button>` : ''}
+        <button class="ia" data-restore="${r.id}" title="ফেরত আনুন">↩️</button>
+        <button class="ia" data-purge="${r.id}" title="স্থায়ীভাবে মুছুন">❌</button>
+      </div></div></li>`; }).join('')}</ul>`
+  : `<div class="empty"><span>✅</span><b>কেউ কোনো খরচ মোছেনি</b></div>`}`;
+  $app.querySelectorAll('[data-receipt]').forEach(b => b.onclick = async () => {
+    const w = window.open('', '_blank');
+    try { w.location = await api.receiptUrl(b.dataset.receipt); } catch (e) { w.close(); alert(errText(e)); }
+  });
+  $app.querySelectorAll('[data-restore]').forEach(b => b.onclick = async () => {
+    try { await api.restoreExpense(Number(b.dataset.restore)); flash('ok', 'খরচটি আবার হিসাবে ফেরত আনা হয়েছে।'); }
+    catch (e) { flash('err', errText(e)); }
+    render();
+  });
+  $app.querySelectorAll('[data-purge]').forEach(b => b.onclick = async () => {
+    if (!confirm('স্থায়ীভাবে মুছে ফেলবেন? এটা আর ফেরত আনা যাবে না।')) return;
+    const r = rows.find(x => String(x.id) === b.dataset.purge);
+    try {
+      await api.purgeExpense(r.id);
+      if (r.receipt_path) api.removeReceipt(r.receipt_path);
+      flash('ok', 'খরচটি স্থায়ীভাবে মুছে ফেলা হয়েছে।');
+    } catch (e) { flash('err', errText(e)); }
+    render();
+  });
+};
+
 pages.more = async () => {
   const item = (href, ico, title, sub) => `<a class="more-item" href="${href}"><span class="more-ico">${ico}</span><span><b>${title}</b><small>${sub}</small></span><span class="chev">›</span></a>`;
   $app.innerHTML = `${flashHtml()}
   <div class="profile-card"><span class="avatar lg">${h((ME.full_name || '?').trim().charAt(0))}</span>
     <div><b>${h(ME.full_name)}</b><small>${isAdmin() ? 'এডমিন' : 'সদস্য'} · ${h(CFG.COMPANY)}</small></div></div>
   <div class="more-list">
-    ${isAdmin() ? item('#/reports', '📊', 'রিপোর্ট', 'দৈনিক/মাসিক Excel ও PDF') + item('#/members', '👥', 'সদস্য', 'সদস্য যোগ, পাসওয়ার্ড বদল') + item('#/categories', '🏷️', 'খাত', 'খাত যোগ, আইকন, বন্ধ করা') : ''}
+    ${isAdmin() ? item('#/reports', '📊', 'রিপোর্ট', 'দৈনিক/মাসিক Excel ও PDF') + item('#/members', '👥', 'সদস্য', 'সদস্য যোগ, পাসওয়ার্ড বদল') + item('#/categories', '🏷️', 'খাত', 'খাত যোগ, আইকন, বন্ধ করা') + item('#/deleted', '🗑️', 'মুছে ফেলা খরচ', 'কে কী মুছেছে, ফেরত আনুন') : ''}
     ${item('#/password', '🔑', 'পাসওয়ার্ড পরিবর্তন', 'নিজের পাসওয়ার্ড বদলান')}
   </div>
   <button class="btn ghost full" id="lo">লগআউট</button>`;

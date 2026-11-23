@@ -71,7 +71,7 @@ function runBackup() {
   var token = login_(p);
 
   var expenses = fetchAll_(p, token,
-    'expenses?select=*,category:categories(name),member:profiles(full_name)&order=expense_date.asc,id.asc');
+    'expenses?select=*,category:categories(name),member:profiles!user_id(full_name)&order=expense_date.asc,id.asc');
   var categories = fetchAll_(p, token, 'categories?select=*&order=sort_order.asc,id.asc');
   var profiles = fetchAll_(p, token, 'profiles?select=id,full_name,role,active,created_at');
 
