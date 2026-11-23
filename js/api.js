@@ -18,6 +18,9 @@
       return uid ? must(await sb.from('profiles').select('*').eq('id', uid).maybeSingle()) : null;
     },
     async profiles() { return must(await sb.from('profiles').select('*').order('role').order('full_name')); },
+    async adminListUsers() { return must(await sb.rpc('admin_list_users')); },
+    async adminCreateUser(email, password, fullName, role) { return must(await sb.rpc('admin_create_user', { p_email: email, p_password: password, p_full_name: fullName, p_role: role })); },
+    async adminSetPassword(userId, password) { must(await sb.rpc('admin_set_password', { p_user_id: userId, p_password: password })); },
     async updateProfile(id, fields) { must(await sb.from('profiles').update(fields).eq('id', id)); },
 
     async categories() { return must(await sb.from('categories').select('*').order('sort_order').order('id')); },

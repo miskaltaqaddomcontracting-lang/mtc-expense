@@ -28,6 +28,7 @@ const errText = e => {
   if (/Invalid login/i.test(m)) return 'ইমেইল/ইউজারনেম বা পাসওয়ার্ড ভুল।';
   if (/row-level security/i.test(m)) return 'এই কাজের অনুমতি আপনার নেই।';
   if (/duplicate key/i.test(m)) return 'এই নাম আগে থেকেই আছে।';
+  if (/admin_(create_user|set_password|list_users)/i.test(m)) return NEED_SQL;
   if (/icon/i.test(m) && /column|schema/i.test(m)) return 'আইকন সেভ করতে Supabase-এ একবার এই SQL চালান: alter table public.categories add column if not exists icon text;';
   return m;
 };
@@ -437,28 +438,62 @@ pages.print = async () => {
 };
 
 // ---------- এডমিন: সদস্য ও খাত ----------
+const toLoginEmail = u => { u = u.trim().toLowerCase(); return u.includes('@') ? u : u + '@' + CFG.LOGIN_EMAIL_DOMAIN; };
+const shortLogin = e => e && e.endsWith('@' + CFG.LOGIN_EMAIL_DOMAIN) ? e.slice(0, -CFG.LOGIN_EMAIL_DOMAIN.length - 1) : (e || '');
+const NEED_SQL = 'এই সুবিধা চালু করতে Supabase SQL Editor-এ "supabase/admin-users.sql" ফাইলটা একবার চালাতে হবে।';
+
 pages.members = async () => {
   const users = await api.profiles();
+  let emails = {}, sqlReady = true;
+  try { (await api.adminListUsers()).forEach(u => emails[u.id] = u); } catch (e) { sqlReady = false; }
   $app.innerHTML = `${flashHtml()}<h1>সদস্য ব্যবস্থাপনা</h1>
-  <div class="card"><div class="tablewrap"><table>
-    <thead><tr><th>নাম</th><th>ভূমিকা</th><th>সক্রিয়</th><th></th></tr></thead><tbody>
+  ${sqlReady ? '' : `<div class="flash err">${NEED_SQL}</div>`}
+  <form id="add" class="card">
+    <h2>+ নতুন সদস্য যোগ করুন</h2>
+    <div class="filters">
+      <label>নাম<input name="full_name" required placeholder="যেমন: রহিম উদ্দিন"></label>
+      <label>ইউজারনেম<input name="login" required autocomplete="off" autocapitalize="none" placeholder="যেমন: rahim"></label>
+      <label>পাসওয়ার্ড<input name="password" required minlength="6" autocomplete="new-password" placeholder="কমপক্ষে ৬ অক্ষর"></label>
+      <label>ভূমিকা<select name="role"><option value="member">সদস্য</option><option value="admin">এডমিন</option></select></label>
+      <button class="btn" ${sqlReady ? '' : 'disabled'}>যোগ করুন</button>
+    </div>
+    <p class="muted small">ইউজারনেম ইংরেজি ছোট অক্ষরে দিন (ফাঁকা জায়গা ছাড়া)। সদস্য লগইন করবেন এই ইউজারনেম আর পাসওয়ার্ড দিয়ে। চাইলে পুরো ইমেইলও দিতে পারেন।</p>
+  </form>
+  <div class="card"><h2>সব সদস্য</h2><div class="tablewrap"><table>
+    <thead><tr><th>নাম</th><th>ইউজারনেম</th><th>ভূমিকা</th><th>সক্রিয়</th><th></th><th>নতুন পাসওয়ার্ড</th></tr></thead><tbody>
     ${users.map(u => `<tr data-id="${u.id}">
       <td><input name="full_name" value="${h(u.full_name)}"></td>
+      <td class="nw"><code>${h(shortLogin(emails[u.id]?.email)) || '—'}</code>${emails[u.id] && !emails[u.id].last_sign_in_at ? '<br><span class="muted small">এখনো লগইন করেননি</span>' : ''}</td>
       <td><select name="role" ${u.id === ME.id ? 'disabled' : ''}><option value="member">সদস্য</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>এডমিন</option></select></td>
       <td><input type="checkbox" name="active" ${u.active ? 'checked' : ''} ${u.id === ME.id ? 'disabled' : ''}></td>
-      <td><button class="btn sm" data-save>সেভ</button></td></tr>`).join('')}
-    </tbody></table></div></div>
-  <div class="card note">
-    <b>নতুন সদস্য যোগ করতে:</b> Supabase Dashboard → Authentication → Users → <b>Add user → Create new user</b>।
-    ইমেইল দিন যেমন <code>member4@${h(CFG.LOGIN_EMAIL_DOMAIN)}</code> (তাহলে সে শুধু <code>member4</code> লিখে লগইন করতে পারবে), পাসওয়ার্ড দিন, আর <b>Auto Confirm User</b> টিক দিন।
-    তারপর এই পাতা রিফ্রেশ করে নাম ঠিক করুন আর <b>"সক্রিয়" টিক দিয়ে সেভ করুন</b> (নিরাপত্তার জন্য নতুন ইউজার শুরুতে নিষ্ক্রিয় থাকে)।<br><br>
-    <b>কারো পাসওয়ার্ড ভুলে গেলে:</b> একই জায়গায় ইউজারের পাশে "…" → <b>Reset password / Update user</b>।
-    কাউকে বাদ দিতে চাইলে এখানে "সক্রিয়" টিক তুলে দিন, তার পুরনো হিসাব থেকে যাবে।</div>`;
+      <td><button class="btn sm" data-save>সেভ</button></td>
+      <td class="nw"><input name="newpw" placeholder="নতুন পাসওয়ার্ড" autocomplete="new-password" style="min-width:120px;width:140px" ${sqlReady ? '' : 'disabled'}>
+        <button class="btn sm ghost" data-pw ${sqlReady ? '' : 'disabled'}>বদলান</button></td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="muted small">কাউকে বাদ দিতে চাইলে "সক্রিয়" টিক তুলে দিয়ে সেভ করুন। তিনি আর লগইন করতে পারবেন না, কিন্তু তার আগের খরচের হিসাব থেকে যাবে।</p></div>`;
+
+  document.getElementById('add').onsubmit = async ev => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target), login = String(fd.get('login')).trim();
+    if (/\s/.test(login)) { flash('err', 'ইউজারনেমে ফাঁকা জায়গা দেওয়া যাবে না।'); return render(); }
+    const name = String(fd.get('full_name')).trim();
+    try {
+      await api.adminCreateUser(toLoginEmail(login), String(fd.get('password')), name, fd.get('role'));
+      flash('ok', `${name} যোগ হয়েছে। লগইন: ইউজারনেম "${login}" আর আপনার দেওয়া পাসওয়ার্ড।`);
+    } catch (e) { flash('err', errText(e)); }
+    render();
+  };
   $app.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
     const tr = b.closest('tr'), id = tr.dataset.id;
     const fields = { full_name: tr.querySelector('[name=full_name]').value.trim() };
     if (id !== ME.id) { fields.role = tr.querySelector('[name=role]').value; fields.active = tr.querySelector('[name=active]').checked; }
     try { await api.updateProfile(id, fields); flash('ok', `${fields.full_name} আপডেট হয়েছে।`); } catch (e) { flash('err', errText(e)); }
+    render();
+  });
+  $app.querySelectorAll('[data-pw]').forEach(b => b.onclick = async () => {
+    const tr = b.closest('tr'), pw = tr.querySelector('[name=newpw]').value, name = tr.querySelector('[name=full_name]').value;
+    if (pw.length < 6) { flash('err', 'পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।'); return render(); }
+    try { await api.adminSetPassword(tr.dataset.id, pw); flash('ok', `${name}-এর পাসওয়ার্ড বদলানো হয়েছে।`); } catch (e) { flash('err', errText(e)); }
     render();
   });
 };
