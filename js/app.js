@@ -45,7 +45,7 @@ const pages = {};
 pages.login = async () => {
   $app.innerHTML = `<div class="auth">
     <div class="auth-card">
-      <div class="auth-brand"><span class="logo big">MTC</span><h1>খরচ হিসাব</h1><p>${h(CFG.COMPANY)}</p></div>
+      <div class="auth-brand"><img class="logo-img big" src="icons/logo.png" alt="MTC"><h1>খরচ হিসাব</h1><p>${h(CFG.COMPANY)}</p></div>
       ${flashHtml()}
       <form id="f" class="stack">
         <label class="field"><span>ইউজারনেম বা ইমেইল</span><input name="u" autocomplete="username" autocapitalize="none" required autofocus placeholder="যেমন: rahim"></label>
@@ -526,7 +526,7 @@ pages.print = async () => {
     <tr class="tot"><td>মোট</td><td class="r">${money(r.total)}</td></tr></tbody></table>`;
   $app.innerHTML = `<div class="noprint row"><button class="btn" onclick="window.print()">PDF হিসেবে সেভ / প্রিন্ট করুন</button>
       <button class="btn ghost" id="xl">Excel ডাউনলোড</button><a href="#/reports">← রিপোর্ট পাতা</a></div>
-    <header class="phead"><span class="logo">MTC</span><div><h1>${h(CFG.COMPANY)}</h1><h2>${h(r.label)}</h2>
+    <header class="phead"><img class="logo-img" src="icons/logo.png" alt="MTC"><div><h1>${h(CFG.COMPANY)}</h1><h2>${h(r.label)}</h2>
       <p class="muted">মোট খরচ: <b>${money(r.total)} ${C}</b> · ${r.rows.length}টি এন্ট্রি</p></div></header>
     ${sumTable('খাত অনুযায়ী সারাংশ', 'খাত', r.byCategory)}
     ${r.type !== 'day' && r.byDate.length ? sumTable('দিন অনুযায়ী সারাংশ', 'তারিখ', r.byDate) : ''}
