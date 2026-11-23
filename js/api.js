@@ -46,7 +46,7 @@
     async addExpense(e) { must(await sb.from('expenses').insert(e)); },
     async updateExpense(id, e) { must(await sb.from('expenses').update(e).eq('id', id)); },
     async deleteExpense(id) { must(await sb.from('expenses').delete().eq('id', id)); },
-    async monthlyTotals() { return must(await sb.rpc('monthly_totals', { max_months: 12 })); },
+    async monthlyTotals(n = 12) { return must(await sb.rpc('monthly_totals', { max_months: n })); },
 
     async uploadReceipt(file, uid) {
       const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');

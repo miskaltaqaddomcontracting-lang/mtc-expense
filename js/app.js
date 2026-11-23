@@ -28,6 +28,7 @@ const errText = e => {
   if (/Invalid login/i.test(m)) return 'ইমেইল/ইউজারনেম বা পাসওয়ার্ড ভুল।';
   if (/row-level security/i.test(m)) return 'এই কাজের অনুমতি আপনার নেই।';
   if (/duplicate key/i.test(m)) return 'এই নাম আগে থেকেই আছে।';
+  if (/icon/i.test(m) && /column|schema/i.test(m)) return 'আইকন সেভ করতে Supabase-এ একবার এই SQL চালান: alter table public.categories add column if not exists icon text;';
   return m;
 };
 const go = hash => { if (location.hash === hash) render(); else location.hash = hash; };
@@ -59,45 +60,169 @@ pages.login = async () => {
   };
 };
 
+// খাতের রং (রঙ-অন্ধ মানুষের জন্যও আলাদা করে বোঝা যায় এমনভাবে বাছাই করা ৮টি রং, ক্রম বদলাবেন না)
+const CAT_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'];
+const OTHER_COLOR = '#9a9890';
+// খাতের আইকন না দেওয়া থাকলে নাম দেখে আইকন বেছে নেয়
+const ICON_GUESS = [
+  [/খাবার|food|meal|নাস্তা/i, '🍛'], [/যাতায়াত|transport|taxi|ভাড়া গাড়ি|bus/i, '🚕'], [/জ্বালানি|fuel|petrol|diesel|তেল/i, '⛽'],
+  [/সামগ্রী|material|cement|সিমেন্ট|রড|steel/i, '🧱'], [/মজুরি|labou?r|শ্রমিক|salary|বেতন/i, '👷'], [/যন্ত্র|equipment|machine|tool/i, '🚜'],
+  [/অফিস|office|stationery/i, '🏢'], [/মেরামত|repair|maintenance/i, '🔧'], [/বিদ্যুৎ|electric|bill|বিল/i, '💡'], [/পানি|water/i, '💧'],
+  [/ভাড়া|rent/i, '🏠'], [/মোবাইল|phone|internet/i, '📱'], [/চিকিৎসা|medical|ওষুধ/i, '💊'], [/গাড়ি|vehicle|car/i, '🚚'],
+];
+const catIcon = c => c?.icon || (ICON_GUESS.find(([re]) => re.test(c?.name || '')) || [0, '📦'])[1];
+const catColor = (cats, id) => { const i = cats.findIndex(c => c.id === id); return i >= 0 && i < CAT_COLORS.length ? CAT_COLORS[i] : OTHER_COLOR; };
+const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
+const bnDate = d => new Date(d + 'T00:00:00').toLocaleDateString('bn-BD', { day: 'numeric', month: 'long' });
+const bnMonth = m => new Date(m + '-01T00:00:00').toLocaleDateString('bn-BD', { month: 'long', year: 'numeric' });
+const shiftMonth = (m, n) => { const d = new Date(+m.slice(0, 4), +m.slice(5, 7) - 1 + n, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+const delta = (now, before, label) => {
+  if (!before) return `<em class="delta">${label}: —</em>`;
+  const d = Math.round((now - before) / before * 100);
+  return `<em class="delta ${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d > 0 ? '▲' : d < 0 ? '▼' : '•'} ${Math.abs(d)}% ${label}</em>`;
+};
+
+function donut(slices, total) {
+  if (!total) return '<div class="donut-empty muted">এই মাসে কোনো খরচ নেই</div>';
+  const R = 70, C = 2 * Math.PI * R, GAP = slices.length > 1 ? 2 : 0;
+  let off = 0;
+  const arcs = slices.map(s => {
+    const len = s.total / total * C, seg = Math.max(len - GAP, 0.5);
+    const el = `<circle r="${R}" cx="90" cy="90" fill="none" stroke="${s.color}" stroke-width="26" stroke-dasharray="${seg} ${C - seg}" stroke-dashoffset="${-off}"
+      data-tip="${h(s.icon + ' ' + s.name)}: ${money(s.total)} ${h(CFG.CURRENCY)} (${pct(s.total, total)}%)"></circle>`;
+    off += len; return el;
+  }).join('');
+  return `<svg viewBox="0 0 180 180" class="donut" role="img" aria-label="খাত অনুযায়ী খরচের ভাগ"><g transform="rotate(-90 90 90)">${arcs}</g>
+    <text x="90" y="84" class="donut-k">মোট</text><text x="90" y="106" class="donut-v">${money(total)}</text></svg>`;
+}
+
 pages.dashboard = async () => {
   const p = params();
   const month = isMonth(p.get('month')) ? p.get('month') : thisMonth();
-  const t = today();
-  const [rows, months] = await Promise.all([api.expenses({ month }), api.monthlyTotals()]);
+  const t = today(), isCur = month === thisMonth();
+  const y = new Date(new Date(t + 'T00:00:00').getTime() - 864e5).toLocaleDateString('en-CA');
+  const [rows, months, cats] = await Promise.all([api.expenses({ month }), api.monthlyTotals(120), api.categories()]);
   const todayRows = t.startsWith(month) ? rows.filter(r => r.expense_date === t) : await api.expenses({ date: t });
+  const yTotal = total(y.startsWith(month) ? rows.filter(r => r.expense_date === y) : await api.expenses({ date: y }));
   const monthTotal = total(rows), todayTotal = total(todayRows);
+  const allTime = months.reduce((s, m) => s + Number(m.total), 0);
+  const prevMonth = Number(months.find(m => m.month === shiftMonth(month, -1))?.total || 0);
   const daily = Array.from({ length: daysInMonth(month) }, (_, i) => {
     const d = `${month}-${String(i + 1).padStart(2, '0')}`;
     return { date: d, total: total(rows.filter(r => r.expense_date === d)) };
   });
   const maxDaily = Math.max(1, ...daily.map(d => d.total));
-  const pastDays = daily.filter(d => d.date <= t).length;
+  const pastDays = isCur ? daily.filter(d => d.date <= t).length : daily.length;
+  const peak = daily.reduce((a, b) => (b.total > a.total ? b : a), daily[0]);
+  const C = h(CFG.CURRENCY);
+
+  // খাতের হিসাব: সক্রিয় সব খাত দেখাবে, খরচ না থাকলেও
+  const catStats = cats.filter(c => c.active || rows.some(r => r.category_id === c.id)).map(c => {
+    const cr = rows.filter(r => r.category_id === c.id);
+    return { id: c.id, name: c.name, icon: catIcon(c), color: catColor(cats, c.id), total: total(cr), count: cr.length,
+      today: total(todayRows.filter(r => r.category_id === c.id)) };
+  }).sort((a, b) => b.total - a.total);
+  const withSpend = catStats.filter(c => c.total > 0);
+  let slices = withSpend;
+  if (withSpend.length > 8) {
+    const rest = withSpend.slice(7);
+    slices = [...withSpend.slice(0, 7), { name: 'অন্যান্য খাত', icon: '•', color: OTHER_COLOR, total: rest.reduce((s, c) => s + c.total, 0) }];
+  }
+  const recent = rows.slice(0, 6);
+  const catById = id => cats.find(c => c.id === id);
+
   $app.innerHTML = `${flashHtml()}
-  <div class="pagehead"><h1>ড্যাশবোর্ড</h1>
-    <label>মাস <input type="month" id="m" value="${month}"></label></div>
-  <div class="stats">
-    <div class="stat"><span>আজকের খরচ (${t})</span><b>${money(todayTotal)} <small>${h(CFG.CURRENCY)}</small></b><em>${todayRows.length}টি এন্ট্রি</em></div>
-    <div class="stat accent"><span>এই মাসের মোট (${month})</span><b>${money(monthTotal)} <small>${h(CFG.CURRENCY)}</small></b><em>${rows.length}টি এন্ট্রি</em></div>
-    <div class="stat"><span>দৈনিক গড় (${month})</span><b>${money(pastDays ? monthTotal / pastDays : 0)} <small>${h(CFG.CURRENCY)}</small></b><em>আজ পর্যন্ত দিনের হিসাবে</em></div>
+  <div class="dash-head">
+    <div><p class="eyebrow">${h(CFG.COMPANY)}</p><h1>খরচের ড্যাশবোর্ড</h1></div>
+    <div class="month-nav">
+      <a class="icon-btn" href="#/?month=${shiftMonth(month, -1)}" aria-label="আগের মাস">‹</a>
+      <label class="month-pick"><span>${bnMonth(month)}</span><input type="month" id="m" value="${month}"></label>
+      <a class="icon-btn ${isCur ? 'disabled' : ''}" href="#/?month=${shiftMonth(month, 1)}" aria-label="পরের মাস">›</a>
+    </div>
   </div>
-  <section class="card"><h2>দৈনিক খরচ — ${month}</h2>
-    <div class="bars">${daily.map(d => `<a class="bar ${d.date === t ? 'today' : ''}" href="#/expenses?date=${d.date}" title="${d.date}: ${money(d.total)} ${h(CFG.CURRENCY)}">
-      <i style="height:${(d.total / maxDaily * 100).toFixed(1)}%"></i><span>${+d.date.slice(8)}</span></a>`).join('')}</div>
-    <p class="muted small">যেকোনো দিনের বারে ক্লিক করলে সেই দিনের সব খরচ দেখা যাবে।</p></section>
-  <div class="grid2">
-    <section class="card"><h2>খাত অনুযায়ী — ${month}</h2>
-      ${rows.length ? hbars(sumBy(rows, catName), monthTotal) : '<p class="muted">এই মাসে কোনো খরচ নেই।</p>'}</section>
-    <section class="card"><h2>আজ খাত অনুযায়ী</h2>
-      ${todayRows.length ? hbars(sumBy(todayRows, catName), todayTotal) : '<p class="muted">আজ এখনো কোনো খরচ যোগ হয়নি।</p>'}
-      <h2 class="mt">সদস্য অনুযায়ী — ${month}</h2>
-      ${sumBy(rows, userName).map(c => `<div class="hrow"><span>${h(c.name)}</span><b>${money(c.total)}</b></div>`).join('') || '<p class="muted">—</p>'}</section>
+
+  <div class="kpis">
+    <div class="kpi kpi-hero">
+      <span class="kpi-k">${isCur ? 'এই মাসের' : bnMonth(month) + '-এর'} মোট খরচ</span>
+      <b class="kpi-v">${money(monthTotal)} <small>${C}</small></b>
+      ${delta(monthTotal, prevMonth, 'আগের মাসের তুলনায়')}
+      <span class="kpi-sub">${rows.length}টি এন্ট্রি · ${withSpend.length}টি খাতে</span>
+    </div>
+    <div class="kpi"><span class="kpi-ico">📅</span><span class="kpi-k">আজকের খরচ</span>
+      <b class="kpi-v">${money(todayTotal)} <small>${C}</small></b>${delta(todayTotal, yTotal, 'গতকালের তুলনায়')}</div>
+    <div class="kpi"><span class="kpi-ico">📊</span><span class="kpi-k">দৈনিক গড়</span>
+      <b class="kpi-v">${money(pastDays ? monthTotal / pastDays : 0)} <small>${C}</small></b>
+      <em class="delta">সর্বোচ্চ: ${peak.total ? bnDate(peak.date) + ' · ' + money(peak.total) : '—'}</em></div>
+    <div class="kpi"><span class="kpi-ico">🏦</span><span class="kpi-k">সর্বমোট খরচ (শুরু থেকে)</span>
+      <b class="kpi-v">${money(allTime)} <small>${C}</small></b><em class="delta">${months.length}টি মাসের হিসাব</em></div>
   </div>
-  <section class="card"><h2>মাসভিত্তিক মোট</h2><table>
-    <thead><tr><th>মাস</th><th class="r">এন্ট্রি</th><th class="r">মোট (${h(CFG.CURRENCY)})</th></tr></thead><tbody>
-    ${months.map(m => `<tr><td><a href="#/?month=${m.month}">${m.month}</a></td><td class="r">${m.entries}</td><td class="r">${money(m.total)}</td></tr>`).join('')
-      || '<tr><td colspan="3" class="muted">এখনো কোনো খরচ নেই।</td></tr>'}</tbody></table></section>`;
-  document.getElementById('m').onchange = e => go('#/?month=' + e.target.value);
+
+  <section class="sec">
+    <div class="sec-head"><h2>খাত অনুযায়ী খরচ</h2><a href="#/expenses?month=${month}" class="small">সব খরচ দেখুন →</a></div>
+    <div class="cat-grid">
+      ${catStats.map(c => `<a class="cat-card" href="#/expenses?month=${month}&category=${c.id}" style="--c:${c.color}">
+        <div class="cat-top"><span class="cat-ico">${h(c.icon)}</span><span class="cat-share">${pct(c.total, monthTotal)}%</span></div>
+        <div class="cat-name">${h(c.name)}</div>
+        <div class="cat-amt">${money(c.total)} <small>${C}</small></div>
+        <div class="cat-bar"><i style="width:${pct(c.total, monthTotal)}%"></i></div>
+        <div class="cat-meta"><span>আজ: <b>${money(c.today)}</b></span><span>${c.count}টি এন্ট্রি</span></div>
+      </a>`).join('') || '<p class="muted">কোনো খাত নেই। এডমিন "খাত" পাতা থেকে যোগ করুন।</p>'}
+    </div>
+  </section>
+
+  <div class="chart-row">
+    <section class="card chart-card">
+      <div class="sec-head"><h2>দৈনিক খরচ</h2><span class="muted small">সর্বোচ্চ দিন ${money(maxDaily === 1 && !peak.total ? 0 : maxDaily)} ${C}</span></div>
+      <div class="vbars" role="img" aria-label="${bnMonth(month)} মাসের দৈনিক খরচ">
+        ${[1, 0.5].map(f => `<div class="grid-line" style="bottom:${f * 100}%"><span>${money(maxDaily * f).replace(/\.00$/, '')}</span></div>`).join('')}
+        ${daily.map(d => `<a class="vbar ${d.date === t ? 'today' : ''} ${d.date > t ? 'future' : ''}" href="#/expenses?date=${d.date}"
+          data-tip="${bnDate(d.date)}: ${money(d.total)} ${C}"><i style="height:${(d.total / maxDaily * 100).toFixed(1)}%"></i></a>`).join('')}
+      </div>
+      <div class="vbar-axis">${daily.map(d => `<span>${+d.date.slice(8) % 5 === 0 || d.date.endsWith('-01') ? +d.date.slice(8) : ''}</span>`).join('')}</div>
+      <p class="muted small">যেকোনো দিনের বারে চাপলে সেই দিনের খরচ দেখাবে। কমলা বার = আজ।</p>
+    </section>
+    <section class="card chart-card">
+      <div class="sec-head"><h2>খরচের ভাগ</h2></div>
+      <div class="donut-wrap">${donut(slices, monthTotal)}
+        <ul class="legend">${slices.map(s => `<li><i style="background:${s.color}"></i><span>${h(s.icon)} ${h(s.name)}</span><b>${pct(s.total, monthTotal)}%</b></li>`).join('')}</ul>
+      </div>
+    </section>
+  </div>
+
+  <div class="chart-row">
+    <section class="card">
+      <div class="sec-head"><h2>সাম্প্রতিক খরচ</h2><a href="#/new" class="small">+ নতুন খরচ</a></div>
+      <ul class="recent">${recent.map(r => { const c = catById(r.category_id); return `<li>
+        <span class="r-ico" style="--c:${catColor(cats, r.category_id)}">${h(catIcon(c || r.category))}</span>
+        <div class="r-mid"><b>${h(r.description || catName(r))}</b><span>${h(catName(r))} · ${h(userName(r))} · ${bnDate(r.expense_date)}</span></div>
+        <b class="r-amt">${money(r.amount)}</b></li>`; }).join('') || '<li class="muted">এই মাসে এখনো কোনো খরচ নেই।</li>'}</ul>
+    </section>
+    <section class="card">
+      <div class="sec-head"><h2>মাসভিত্তিক মোট</h2></div>
+      ${(() => { const ms = months.slice(0, 6), mx = Math.max(1, ...ms.map(m => Number(m.total)));
+        return ms.map(m => `<a class="mrow ${m.month === month ? 'on' : ''}" href="#/?month=${m.month}"><span>${bnMonth(m.month)}</span>
+          <div class="mbar"><i style="width:${(Number(m.total) / mx * 100).toFixed(1)}%"></i></div><b>${money(m.total)}</b></a>`).join('') || '<p class="muted">এখনো কোনো খরচ নেই।</p>'; })()}
+      <h2 class="mt">সদস্য অনুযায়ী</h2>
+      ${sumBy(rows, userName).map(c => `<div class="urow"><span>${h(c.name)}</span><b>${money(c.total)}</b></div>`).join('') || '<p class="muted">—</p>'}
+    </section>
+  </div>`;
+  document.getElementById('m').onchange = e => e.target.value && go('#/?month=' + e.target.value);
+  bindTips();
 };
+
+// চার্টের উপর আঙুল/মাউস রাখলে ছোট বাক্সে হিসাব দেখায়
+function bindTips() {
+  let tip = document.getElementById('tip');
+  if (!tip) { tip = Object.assign(document.createElement('div'), { id: 'tip', className: 'tip' }); document.body.appendChild(tip); }
+  const show = (el, x, y) => { tip.textContent = el.dataset.tip; tip.style.display = 'block';
+    const w = tip.offsetWidth; tip.style.left = Math.min(Math.max(8, x - w / 2), innerWidth - w - 8) + 'px'; tip.style.top = (y - 44) + 'px'; };
+  $app.querySelectorAll('[data-tip]').forEach(el => {
+    el.addEventListener('mousemove', e => show(el, e.clientX, e.clientY));
+    el.addEventListener('mouseleave', () => tip.style.display = 'none');
+    el.addEventListener('touchstart', e => { const t0 = e.touches[0]; show(el, t0.clientX, t0.clientY); }, { passive: true });
+  });
+  window.addEventListener('scroll', () => tip.style.display = 'none', { passive: true });
+}
 
 pages.expenses = async () => {
   const p = params();
@@ -341,17 +466,18 @@ pages.members = async () => {
 pages.categories = async () => {
   const cats = await api.categories();
   $app.innerHTML = `${flashHtml()}<h1>খরচের খাত</h1>
-  <div class="card"><table><thead><tr><th>খাতের নাম</th><th>সক্রিয়</th><th></th></tr></thead><tbody>
-    ${cats.map(c => `<tr data-id="${c.id}"><td><input name="name" value="${h(c.name)}"></td>
+  <div class="card"><div class="tablewrap"><table><thead><tr><th>আইকন ও খাতের নাম</th><th>সক্রিয়</th><th></th></tr></thead><tbody>
+    ${cats.map(c => `<tr data-id="${c.id}">
+      <td><div class="icon-pick"><input name="icon" value="${h(catIcon(c))}" maxlength="8" aria-label="আইকন"><input name="name" value="${h(c.name)}"></div></td>
       <td><input type="checkbox" name="active" ${c.active ? 'checked' : ''}></td>
       <td class="nw"><button class="btn sm" data-save>সেভ</button> <button class="link danger" data-delcat>মুছুন</button></td></tr>`).join('')}
-  </tbody></table>
-  <p class="muted small">যে খাতে কোনো খরচ নেই সেটা "মুছুন" দিয়ে মুছে ফেলা যায়। যে খাতে আগে খরচ লেখা হয়েছে সেটা মোছা যায় না (তাহলে পুরনো হিসাব নষ্ট হবে) — সেটার "সক্রিয়" টিক তুলে দিন, নতুন খরচে আর দেখাবে না।</p></div>
+  </tbody></table></div>
+  <p class="muted small">আইকন বদলাতে বাম পাশের ঘরে মোবাইলের কীবোর্ড থেকে যেকোনো ইমোজি দিন (যেমন 🍛 ⛽ 🧱 👷 🚜 🏢 🔧 💡 🚚), তারপর সেভ চাপুন।<br>যে খাতে কোনো খরচ নেই সেটা "মুছুন" দিয়ে মুছে ফেলা যায়। যে খাতে আগে খরচ লেখা হয়েছে সেটা মোছা যায় না (তাহলে পুরনো হিসাব নষ্ট হবে) — সেটার "সক্রিয়" টিক তুলে দিন, নতুন খরচে আর দেখাবে না।</p></div>
   <form id="add" class="card filters"><label>নতুন খাত<input name="name" required placeholder="যেমন: গাড়ি মেরামত"></label><button class="btn">যোগ করুন</button></form>`;
   $app.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
     const tr = b.closest('tr');
     try {
-      await api.updateCategory(tr.dataset.id, { name: tr.querySelector('[name=name]').value.trim(), active: tr.querySelector('[name=active]').checked });
+      await api.updateCategory(tr.dataset.id, { name: tr.querySelector('[name=name]').value.trim(), icon: tr.querySelector('[name=icon]').value.trim() || null, active: tr.querySelector('[name=active]').checked });
       flash('ok', 'খাত আপডেট হয়েছে।');
     } catch (e) { flash('err', errText(e)); }
     render();

@@ -21,6 +21,9 @@ create table if not exists public.categories (
   created_at timestamptz not null default now()
 );
 
+-- খাতের আইকন (ইমোজি)
+alter table public.categories add column if not exists icon text;
+
 create table if not exists public.expenses (
   id bigint generated always as identity primary key,
   user_id uuid not null default auth.uid() references public.profiles(id),
