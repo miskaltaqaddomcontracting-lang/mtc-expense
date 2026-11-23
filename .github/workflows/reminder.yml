@@ -1,0 +1,29 @@
+# প্রতিদিন রাত ১১টায় (সৌদি সময়) সদস্যদের ফোনে খরচের রিমাইন্ডার পাঠায়।
+# GitHub-এর সময়সূচি কয়েক মিনিট দেরি করতে পারে, তাই একটু আগে শুরু হয়ে ১১টা পর্যন্ত অপেক্ষা করে।
+name: Nightly reminder
+on:
+  schedule:
+    - cron: '35 19 * * *'   # 19:35 UTC = রাত ১০:৩৫ সৌদি সময়
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'setup = শুধু key তৈরি, now = এখনই পাঠাও'
+        default: now
+        type: choice
+        options: [now, setup]
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --omit=dev --no-audit --no-fund
+        working-directory: notify
+      - run: node notify/send.js
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          NO_WAIT: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+          SETUP_ONLY: ${{ inputs.mode == 'setup' && '1' || '0' }}

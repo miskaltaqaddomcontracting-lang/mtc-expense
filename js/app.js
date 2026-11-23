@@ -30,6 +30,7 @@ const errText = e => {
   if (/duplicate key/i.test(m)) return 'এই নাম আগে থেকেই আছে।';
   if (/admin_(create_user|set_password|list_users)/i.test(m)) return NEED_SQL;
   if (/delete_expense|deleted_at|deleted_by/i.test(m)) return NEED_SQL_DEL;
+  if (/app_settings|push_subscriptions/i.test(m)) return 'নোটিফিকেশন চালু করতে Supabase SQL Editor-এ "supabase/notifications.sql" ফাইলটা একবার চালাতে হবে।';
   if (/icon/i.test(m) && /column|schema/i.test(m)) return 'আইকন সেভ করতে Supabase-এ একবার এই SQL চালান: alter table public.categories add column if not exists icon text;';
   return m;
 };
@@ -717,6 +718,60 @@ pages.deleted = async () => {
   });
 };
 
+// ---------- রাতের রিমাইন্ডার (push notification) ----------
+const b64ToU8 = s => { const b = atob((s + '='.repeat((4 - s.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+const PUSH = {
+  supported: () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window,
+  iosNeedsInstall: () => /iphone|ipad|ipod/i.test(navigator.userAgent) && !navigator.standalone && !matchMedia('(display-mode: standalone)').matches,
+  async current() {
+    if (!PUSH.supported()) return null;
+    const r = await navigator.serviceWorker.getRegistration();
+    return r ? r.pushManager.getSubscription() : null;
+  },
+  async enable() {
+    if (PUSH.iosNeedsInstall()) throw new Error('iPhone-এ আগে Safari-র শেয়ার বাটন → "Add to Home Screen" দিয়ে অ্যাপটা যোগ করুন, তারপর সেখান থেকে খুলে চালু করুন।');
+    if (!PUSH.supported()) throw new Error('এই ব্রাউজারে নোটিফিকেশন চলে না। Chrome দিয়ে খুলুন।');
+    const key = await api.pushPublicKey();
+    if (!key) throw new Error('নোটিফিকেশন এখনো সেটআপ হয়নি। এডমিনকে GitHub-এ "Nightly reminder" একবার setup মোডে চালাতে হবে।');
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') throw new Error('নোটিফিকেশনের অনুমতি দেওয়া হয়নি। ব্রাউজারের ঠিকানার পাশের 🔒 চিহ্ন → Notifications → Allow করুন।');
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(key) });
+    await api.savePush(sub);
+  },
+  async disable() {
+    const sub = await PUSH.current();
+    if (sub) { await api.deletePush(sub.endpoint).catch(() => {}); await sub.unsubscribe(); }
+  },
+};
+async function bindPushCard() {
+  const st = document.getElementById('push-st'), btn = document.getElementById('push-btn');
+  if (!st) return;
+  const on = !!(await PUSH.current().catch(() => null)) && Notification.permission === 'granted';
+  st.textContent = on ? 'চালু আছে · প্রতিদিন রাত ১১টায়' : 'বন্ধ · চালু করলে প্রতিদিন রাত ১১টায় মনে করিয়ে দেবে';
+  btn.textContent = on ? 'বন্ধ করুন' : 'চালু করুন';
+  btn.className = 'btn sm' + (on ? ' ghost' : '');
+  btn.disabled = false;
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try { on ? await PUSH.disable() : await PUSH.enable(); flash('ok', on ? 'রিমাইন্ডার বন্ধ করা হয়েছে।' : 'রিমাইন্ডার চালু হয়েছে। প্রতিদিন রাত ১১টায় নোটিফিকেশন আসবে।'); }
+    catch (e) { flash('err', errText(e)); }
+    render();
+  };
+}
+const pushCardHtml = () => `<div class="push-card"><span class="more-ico">🔔</span><span><b>রাতের রিমাইন্ডার</b><small id="push-st">দেখা হচ্ছে…</small></span><button class="btn sm" id="push-btn" disabled>…</button></div>`;
+function pushBanner() {
+  let dismissed = false;
+  try { dismissed = localStorage.getItem('mtc-push-dismiss') === '1'; } catch (_) {}
+  if (dismissed || !PUSH.supported() || Notification.permission !== 'default' || document.querySelector('.push-card')) return;
+  const d = document.createElement('div');
+  d.className = 'push-banner';
+  d.innerHTML = pushCardHtml() + '<button class="x" aria-label="বন্ধ">×</button>';
+  $app.prepend(d);
+  d.querySelector('.x').onclick = () => { try { localStorage.setItem('mtc-push-dismiss', '1'); } catch (_) {} d.remove(); };
+  bindPushCard();
+}
+
 pages.more = async () => {
   const item = (href, ico, title, sub) => `<a class="more-item" href="${href}"><span class="more-ico">${ico}</span><span><b>${title}</b><small>${sub}</small></span><span class="chev">›</span></a>`;
   $app.innerHTML = `${flashHtml()}
@@ -726,7 +781,9 @@ pages.more = async () => {
     ${isAdmin() ? item('#/reports', '📊', 'রিপোর্ট', 'দৈনিক/মাসিক Excel ও PDF') + item('#/members', '👥', 'সদস্য', 'সদস্য যোগ, পাসওয়ার্ড বদল') + item('#/categories', '🏷️', 'খাত', 'খাত যোগ, আইকন, বন্ধ করা') + item('#/deleted', '🗑️', 'মুছে ফেলা খরচ', 'কে কী মুছেছে, ফেরত আনুন') : ''}
     ${item('#/password', '🔑', 'পাসওয়ার্ড পরিবর্তন', 'নিজের পাসওয়ার্ড বদলান')}
   </div>
+  <div class="more-list">${pushCardHtml()}</div>
   <button class="btn ghost full" id="lo">লগআউট</button>`;
+  bindPushCard();
   document.getElementById('lo').onclick = () => document.getElementById('logout').click();
 };
 
@@ -738,7 +795,7 @@ async function render() {
     const m = route.match(re);
     if (!m) continue;
     if (adminOnly && !isAdmin()) { $app.innerHTML = '<div class="card"><h2>শুধু এডমিন এই পাতা দেখতে পারবেন।</h2></div>'; return; }
-    try { await fn(m); window.scrollTo(0, 0); }
+    try { await fn(m); window.scrollTo(0, 0); if (route === '/') pushBanner(); }
     catch (e) { console.error(e); $app.innerHTML = `<div class="card"><h2>সমস্যা হয়েছে</h2><p>${h(errText(e))}</p><p><a href="#/">ড্যাশবোর্ডে ফিরে যান</a></p></div>`; }
     return;
   }
@@ -761,9 +818,14 @@ async function boot() {
   document.getElementById('tabbar').classList.toggle('hidden', !ME);
   document.body.classList.toggle('authed', !!ME);
   if (!ME) return pages.login();
+  // এই ফোনে নোটিফিকেশন চালু থাকলে বর্তমান ইউজারের নামে আবার সেভ (ইউজার বদলালেও নাম ঠিক থাকে)
+  if (PUSH.supported() && Notification.permission === "granted") PUSH.current().then(s => s && api.savePush(s)).catch(() => {});
   render();
 }
 
-document.getElementById('logout').onclick = async () => { await api.signOut(); ME = null; location.hash = '#/'; boot(); };
+document.getElementById('logout').onclick = async () => {
+  const ps = await PUSH.current().catch(() => null);
+  if (ps) await api.deletePush(ps.endpoint).catch(() => {}); // অন্য কেউ এই ফোনে লগইন করলে তার নামে নোটিফিকেশন যাবে
+  await api.signOut(); ME = null; location.hash = '#/'; boot(); };
 window.addEventListener('hashchange', render);
 boot();

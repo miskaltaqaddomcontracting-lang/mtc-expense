@@ -346,3 +346,10 @@ input:focus,select:focus,textarea:focus{outline:none;background:#fff;border-colo
 .del-tx{opacity:.92}
 .del-tx .r-amt{text-decoration:line-through;color:var(--muted)}
 .del-by{display:block;margin-top:3px;font-size:.78rem;color:#c0392b}
+
+/* ---- night reminder ---- */
+.push-card{display:grid;grid-template-columns:42px 1fr auto;gap:12px;align-items:center;padding:14px 16px}
+.push-card b{display:block}.push-card small{color:var(--muted);font-size:.83rem}
+.push-banner{position:relative;background:linear-gradient(135deg,#fff7e8,#eef4fb);border:1px solid #f1dcb4;border-radius:18px;margin-bottom:14px}
+.push-banner .push-card{padding-right:34px}
+.push-banner .x{position:absolute;top:4px;right:8px;border:0;background:none;font-size:1.3rem;color:var(--muted);cursor:pointer;padding:4px}

@@ -64,6 +64,14 @@
     async purgeExpense(id) { must(await sb.from('expenses').delete().eq('id', id)); },
     async monthlyTotals(n = 12) { return must(await sb.rpc('monthly_totals', { max_months: n })); },
 
+    // রাতের নোটিফিকেশন
+    async pushPublicKey() { return must(await sb.from('app_settings').select('value').eq('key', 'vapid_public').maybeSingle())?.value || null; },
+    async savePush(sub) {
+      const j = sub.toJSON();
+      must(await sb.from('push_subscriptions').upsert({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth }, { onConflict: 'endpoint' }));
+    },
+    async deletePush(endpoint) { must(await sb.from('push_subscriptions').delete().eq('endpoint', endpoint)); },
+
     async uploadReceipt(file, uid) {
       const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
       const path = `${uid}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
