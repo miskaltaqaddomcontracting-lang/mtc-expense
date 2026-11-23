@@ -26,6 +26,7 @@
       must(await sb.from('categories').insert({ name, sort_order: (max[0]?.sort_order || 0) + 1 }));
     },
     async updateCategory(id, fields) { must(await sb.from('categories').update(fields).eq('id', id)); },
+    async deleteCategory(id) { must(await sb.from('categories').delete().eq('id', id)); },
 
     // f: { date, month, from, to, categoryId, userId }
     async expenses(f = {}) {

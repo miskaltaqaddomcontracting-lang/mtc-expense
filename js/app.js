@@ -343,9 +343,10 @@ pages.categories = async () => {
   $app.innerHTML = `${flashHtml()}<h1>খরচের খাত</h1>
   <div class="card"><table><thead><tr><th>খাতের নাম</th><th>সক্রিয়</th><th></th></tr></thead><tbody>
     ${cats.map(c => `<tr data-id="${c.id}"><td><input name="name" value="${h(c.name)}"></td>
-      <td><input type="checkbox" name="active" ${c.active ? 'checked' : ''}></td><td><button class="btn sm" data-save>সেভ</button></td></tr>`).join('')}
+      <td><input type="checkbox" name="active" ${c.active ? 'checked' : ''}></td>
+      <td class="nw"><button class="btn sm" data-save>সেভ</button> <button class="link danger" data-delcat>মুছুন</button></td></tr>`).join('')}
   </tbody></table>
-  <p class="muted small">কোনো খাত বন্ধ (নিষ্ক্রিয়) করলে নতুন খরচে আর দেখাবে না, তবে পুরনো হিসাব ঠিক থাকবে।</p></div>
+  <p class="muted small">যে খাতে কোনো খরচ নেই সেটা "মুছুন" দিয়ে মুছে ফেলা যায়। যে খাতে আগে খরচ লেখা হয়েছে সেটা মোছা যায় না (তাহলে পুরনো হিসাব নষ্ট হবে) — সেটার "সক্রিয়" টিক তুলে দিন, নতুন খরচে আর দেখাবে না।</p></div>
   <form id="add" class="card filters"><label>নতুন খাত<input name="name" required placeholder="যেমন: গাড়ি মেরামত"></label><button class="btn">যোগ করুন</button></form>`;
   $app.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
     const tr = b.closest('tr');
@@ -353,6 +354,15 @@ pages.categories = async () => {
       await api.updateCategory(tr.dataset.id, { name: tr.querySelector('[name=name]').value.trim(), active: tr.querySelector('[name=active]').checked });
       flash('ok', 'খাত আপডেট হয়েছে।');
     } catch (e) { flash('err', errText(e)); }
+    render();
+  });
+  $app.querySelectorAll('[data-delcat]').forEach(b => b.onclick = async () => {
+    const tr = b.closest('tr'), name = tr.querySelector('[name=name]').value;
+    if (!confirm(`"${name}" খাতটি মুছে ফেলবেন?`)) return;
+    try { await api.deleteCategory(tr.dataset.id); flash('ok', `খাত মুছে ফেলা হয়েছে: ${name}`); }
+    catch (e) {
+      flash('err', /foreign key|violates/i.test(e?.message || '') ? `"${name}" খাতে আগে খরচ লেখা আছে, তাই মোছা যাবে না। এর বদলে "সক্রিয়" টিক তুলে দিয়ে সেভ করুন।` : errText(e));
+    }
     render();
   });
   document.getElementById('add').onsubmit = async ev => {
