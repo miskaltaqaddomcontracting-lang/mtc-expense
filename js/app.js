@@ -43,19 +43,23 @@ const options = (list, sel, label = x => x.name) => list.map(x => `<option value
 const pages = {};
 
 pages.login = async () => {
-  $app.innerHTML = `<div class="login"><div class="card">
-    <div class="login-brand"><span class="logo big">MTC</span><h1>খরচ হিসাব</h1><p class="muted">${h(CFG.COMPANY)}</p></div>
-    ${flashHtml()}
-    <form id="f" class="stack">
-      <label>ইউজারনেম বা ইমেইল<input name="u" autocomplete="username" required autofocus></label>
-      <label>পাসওয়ার্ড<input name="p" type="password" autocomplete="current-password" required></label>
-      <button class="btn">লগইন</button>
-    </form></div></div>`;
+  $app.innerHTML = `<div class="auth">
+    <div class="auth-card">
+      <div class="auth-brand"><span class="logo big">MTC</span><h1>খরচ হিসাব</h1><p>${h(CFG.COMPANY)}</p></div>
+      ${flashHtml()}
+      <form id="f" class="stack">
+        <label class="field"><span>ইউজারনেম বা ইমেইল</span><input name="u" autocomplete="username" autocapitalize="none" required autofocus placeholder="যেমন: rahim"></label>
+        <label class="field"><span>পাসওয়ার্ড</span><input name="p" type="password" autocomplete="current-password" required placeholder="••••••"></label>
+        <button class="btn btn-lg">লগইন করুন →</button>
+      </form>
+    </div>
+    <p class="auth-foot">দৈনিক খরচের হিসাব · নিরাপদ ও সহজ</p></div>`;
   document.getElementById('f').onsubmit = async ev => {
     ev.preventDefault();
     const fd = new FormData(ev.target);
     let u = fd.get('u').trim().toLowerCase();
     if (!u.includes('@')) u += '@' + CFG.LOGIN_EMAIL_DOMAIN;
+    ev.target.querySelector('button').disabled = true;
     try { await api.signIn(u, fd.get('p')); await boot(); }
     catch (e) { flash('err', errText(e)); pages.login(); }
   };
@@ -287,30 +291,55 @@ function bindTips() {
   window.addEventListener('scroll', () => tip.style.display = 'none', { passive: true });
 }
 
+const pageHead = (title, sub = '', action = '') => `<div class="page-head"><div><h1>${title}</h1>${sub ? `<p>${sub}</p>` : ''}</div>${action}</div>`;
+const switchEl = (name, on, dis = '') => `<label class="switch"><input type="checkbox" name="${name}" ${on ? 'checked' : ''} ${dis}><span></span></label>`;
+
 pages.expenses = async () => {
   const p = params();
   const f = { date: isDate(p.get('date')) ? p.get('date') : '', month: '', categoryId: p.get('category') || '', userId: p.get('user') || '' };
   if (!f.date) f.month = isMonth(p.get('month')) ? p.get('month') : thisMonth();
   const [rows, cats, users] = await Promise.all([api.expenses(f), api.categories(), api.profiles()]);
+  const C = h(CFG.CURRENCY), sum = total(rows);
+  const groups = [];
+  rows.forEach(r => { let g = groups[groups.length - 1]; if (!g || g.date !== r.expense_date) groups.push(g = { date: r.expense_date, rows: [] }); g.rows.push(r); });
+  const activeCat = cats.find(c => String(c.id) === String(f.categoryId));
+  const activeUser = users.find(u => u.id === f.userId);
+  const periodLabel = f.date ? bnDate(f.date) : bnMonth(f.month);
+  const qs = o => { const q = new URLSearchParams(); Object.entries(o).forEach(([k, v]) => v && q.set(k, v)); return '#/expenses?' + q; };
+  const base = { date: f.date, month: f.date ? '' : f.month, category: f.categoryId, user: f.userId };
+
   $app.innerHTML = `${flashHtml()}
-  <div class="pagehead"><h1>সব খরচ</h1><a class="btn" href="#/new">+ খরচ যোগ করুন</a></div>
-  <form id="flt" class="card filters">
-    <label>তারিখ<input type="date" name="date" value="${f.date}"></label><span class="or">অথবা</span>
-    <label>মাস<input type="month" name="month" value="${f.month}"></label>
-    <label>খাত<select name="category"><option value="">সব খাত</option>${options(cats, f.categoryId)}</select></label>
-    <label>সদস্য<select name="user"><option value="">সবাই</option>${options(users, f.userId, u => u.full_name)}</select></label>
-    <button class="btn">দেখুন</button></form>
-  <div class="card">
-    <div class="sumline"><span>${f.date ? 'তারিখ: ' + f.date : 'মাস: ' + f.month} · ${rows.length}টি এন্ট্রি</span><b>মোট: ${money(total(rows))} ${h(CFG.CURRENCY)}</b></div>
-    <div class="tablewrap"><table>
-      <thead><tr><th>তারিখ</th><th>খাত</th><th>বিবরণ</th><th>যিনি দিয়েছেন</th><th class="r">টাকা (${h(CFG.CURRENCY)})</th><th>রসিদ</th><th></th></tr></thead>
-      <tbody>${rows.map(r => `<tr>
-        <td class="nw">${r.expense_date}</td><td>${h(catName(r))}</td><td>${h(r.description)}</td><td>${h(userName(r))}</td>
-        <td class="r nw"><b>${money(r.amount)}</b></td>
-        <td>${r.receipt_path ? `<button class="link" data-receipt="${h(r.receipt_path)}">দেখুন</button>` : ''}</td>
-        <td class="nw">${isAdmin() || r.user_id === ME.id ? `<a href="#/edit/${r.id}">এডিট</a> <button class="link danger" data-del="${r.id}">মুছুন</button>` : ''}</td>
-      </tr>`).join('') || '<tr><td colspan="7" class="muted">এই সময়ে কোনো খরচ নেই।</td></tr>'}</tbody>
-    </table></div></div>`;
+  ${pageHead('সব খরচ', 'খাত, সদস্য বা সময় দিয়ে খুঁজুন', '<a class="btn" href="#/new">＋ খরচ যোগ</a>')}
+  <section class="sum-hero">
+    <div><span>${periodLabel}${activeCat ? ' · ' + h(activeCat.name) : ''}${activeUser ? ' · ' + h(activeUser.full_name) : ''}</span>
+      <b>${money(sum)} <small>${C}</small></b></div>
+    <div class="sum-meta"><span>${rows.length}</span>টি এন্ট্রি</div>
+  </section>
+  <details class="filter-box" ${f.categoryId || f.userId || f.date ? 'open' : ''}>
+    <summary><span>🔍 ফিল্টার</span><span class="muted small">${f.categoryId || f.userId || f.date ? 'চালু আছে' : 'তারিখ, মাস, খাত, সদস্য'}</span></summary>
+    <form id="flt" class="filter-grid">
+      <label class="field"><span>তারিখ</span><input type="date" name="date" value="${f.date}"></label>
+      <label class="field"><span>অথবা মাস</span><input type="month" name="month" value="${f.month}"></label>
+      <label class="field"><span>খাত</span><select name="category"><option value="">সব খাত</option>${options(cats, f.categoryId)}</select></label>
+      <label class="field"><span>সদস্য</span><select name="user"><option value="">সবাই</option>${options(users, f.userId, u => u.full_name)}</select></label>
+      <div class="row"><button class="btn">দেখুন</button><a class="btn ghost" href="#/expenses">মুছে দিন</a></div>
+    </form>
+  </details>
+  <div class="chips">
+    <a class="chip-f ${!f.categoryId ? 'on' : ''}" href="${qs({ ...base, category: '' })}">সব</a>
+    ${cats.filter(c => c.active).map(c => `<a class="chip-f ${String(c.id) === String(f.categoryId) ? 'on' : ''}" style="--c:${catColor(cats, c.id)}" href="${qs({ ...base, category: c.id })}">${h(catIcon(c))} ${h(c.name)}</a>`).join('')}
+  </div>
+  ${groups.map(g => `<section class="day-group">
+    <div class="day-head"><b>${bnDate(g.date)}</b><span>${money(total(g.rows))} ${C}</span></div>
+    <ul class="tx-list">${g.rows.map(r => { const c = cats.find(x => x.id === r.category_id); const mine = isAdmin() || r.user_id === ME.id; return `<li class="tx">
+      <span class="r-ico" style="--c:${catColor(cats, r.category_id)}">${h(catIcon(c || r.category))}</span>
+      <div class="r-mid"><b>${h(r.description || catName(r))}</b><span>${h(catName(r))} · ${h(userName(r))}</span></div>
+      <div class="tx-right"><b class="r-amt">${money(r.amount)}</b>
+        <div class="tx-actions">
+          ${r.receipt_path ? `<button class="ia" data-receipt="${h(r.receipt_path)}" title="রসিদ দেখুন">🧾</button>` : ''}
+          ${mine ? `<a class="ia" href="#/edit/${r.id}" title="এডিট">✏️</a><button class="ia" data-del="${r.id}" title="মুছুন">🗑️</button>` : ''}
+        </div></div></li>`; }).join('')}</ul></section>`).join('')
+    || `<div class="empty"><span>🗂️</span><b>এই সময়ে কোনো খরচ নেই</b><a class="btn" href="#/new">＋ খরচ যোগ করুন</a></div>`}`;
   document.getElementById('flt').onsubmit = ev => {
     ev.preventDefault();
     const fd = new FormData(ev.target), q = new URLSearchParams();
@@ -340,24 +369,33 @@ pages.form = async (id) => {
   if (id && (!old || !(isAdmin() || old.user_id === ME.id))) { flash('err', 'আপনি শুধু নিজের খরচ এডিট করতে পারবেন।'); return go('#/expenses'); }
   const e = old || { expense_date: today(), amount: '', description: '', category_id: '' };
   const usable = cats.filter(c => c.active || c.id === e.category_id);
-  $app.innerHTML = `<div class="card narrow">
-    <h1>${id ? 'খরচ এডিট করুন' : 'নতুন খরচ যোগ করুন'}</h1>${flashHtml()}<div id="err"></div>
+  $app.innerHTML = `<div class="form-wrap">
+    ${pageHead(id ? 'খরচ এডিট করুন' : 'নতুন খরচ', id ? 'তথ্য বদলে সেভ করুন' : 'খাত বেছে নিয়ে টাকার পরিমাণ লিখুন')}
+    ${flashHtml()}<div id="err"></div>
     <form id="f" class="stack">
-      <label>তারিখ<input type="date" name="expense_date" value="${e.expense_date}" max="${today()}" required></label>
-      <label>খাত<select name="category_id" required><option value="">— খাত বেছে নিন —</option>${options(usable, e.category_id)}</select></label>
-      <label>টাকার পরিমাণ (${h(CFG.CURRENCY)})<input name="amount" inputmode="decimal" value="${e.amount}" placeholder="যেমন 150.00" required></label>
-      <label>বিবরণ<textarea name="description" rows="3" maxlength="500" placeholder="কী বাবদ খরচ, কোথায়, কার জন্য">${h(e.description)}</textarea></label>
-      <label>রসিদ / ছবি (ঐচ্ছিক, ৮ MB পর্যন্ত)<input type="file" name="receipt" accept="image/*,application/pdf"></label>
-      ${e.receipt_path ? '<p class="small">আগের রসিদ আছে। নতুন ফাইল দিলে বদলে যাবে।</p>' : ''}
-      <div class="row"><button class="btn" name="go" value="list">সেভ করুন</button>
-        ${id ? '' : '<button class="btn ghost" name="go" value="again">সেভ করে আরেকটি যোগ করুন</button>'}
-        <a href="#/expenses" class="muted">বাতিল</a></div>
+      <div class="amount-box"><span>টাকার পরিমাণ</span>
+        <div class="amount-in"><input name="amount" inputmode="decimal" value="${e.amount}" placeholder="0.00" required autocomplete="off"><em>${h(CFG.CURRENCY)}</em></div></div>
+      <div class="panel">
+        <div class="field"><span>খাত বেছে নিন</span></div>
+        <div class="cat-pick">${usable.map(c => `<label style="--c:${catColor(cats, c.id)}"><input type="radio" name="category_id" value="${c.id}" ${+e.category_id === c.id ? 'checked' : ''} required>
+          <span class="cp-ico">${h(catIcon(c))}</span><span class="cp-name">${h(c.name)}</span></label>`).join('')}</div>
+      </div>
+      <div class="panel stack">
+        <label class="field"><span>📅 তারিখ</span><input type="date" name="expense_date" value="${e.expense_date}" max="${today()}" required></label>
+        <label class="field"><span>📝 বিবরণ</span><textarea name="description" rows="2" maxlength="500" placeholder="কী বাবদ খরচ, কোথায়, কার জন্য">${h(e.description)}</textarea></label>
+        <label class="drop"><input type="file" name="receipt" accept="image/*,application/pdf">
+          <span class="drop-ico">📷</span><span><b id="fname">রসিদের ছবি যোগ করুন</b><small>${e.receipt_path ? 'আগের রসিদ আছে — নতুন দিলে বদলে যাবে' : 'ঐচ্ছিক · ৮ MB পর্যন্ত'}</small></span></label>
+      </div>
+      <div class="form-actions"><button class="btn btn-lg" name="go" value="list">✓ সেভ করুন</button>
+        ${id ? '' : '<button class="btn ghost" name="go" value="again">সেভ করে আরেকটি</button>'}
+        <a href="#/expenses" class="btn plain">বাতিল</a></div>
     </form></div>`;
   const form = document.getElementById('f');
+  form.receipt.onchange = () => { document.getElementById('fname').textContent = form.receipt.files[0]?.name || 'রসিদের ছবি যোগ করুন'; };
   form.onsubmit = async ev => {
     ev.preventDefault();
     const fd = new FormData(form), btns = form.querySelectorAll('button');
-    const showErr = m => { document.getElementById('err').innerHTML = `<div class="flash err">${h(m)}</div>`; btns.forEach(b => b.disabled = false); };
+    const showErr = m => { document.getElementById('err').innerHTML = `<div class="flash err">${h(m)}</div>`; btns.forEach(b => b.disabled = false); scrollTo(0, 0); };
     const amount = Number(String(fd.get('amount')).replace(/,/g, ''));
     const rec = { expense_date: fd.get('expense_date'), category_id: Number(fd.get('category_id')), amount, description: fd.get('description').trim() };
     if (!isDate(rec.expense_date)) return showErr('সঠিক তারিখ দিন।');
@@ -383,11 +421,13 @@ pages.form = async (id) => {
 };
 
 pages.password = async () => {
-  $app.innerHTML = `<div class="card narrow"><h1>পাসওয়ার্ড পরিবর্তন</h1>${flashHtml()}<div id="err"></div>
-    <form id="f" class="stack">
-      <label>নতুন পাসওয়ার্ড<input type="password" name="a" minlength="6" required autocomplete="new-password"></label>
-      <label>আবার নতুন পাসওয়ার্ড<input type="password" name="b" minlength="6" required autocomplete="new-password"></label>
-      <button class="btn">পরিবর্তন করুন</button></form></div>`;
+  $app.innerHTML = `<div class="form-wrap">${pageHead('পাসওয়ার্ড পরিবর্তন', 'নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের দিন')}
+    ${flashHtml()}<div id="err"></div>
+    <form id="f" class="panel stack">
+      <div class="big-ico">🔑</div>
+      <label class="field"><span>নতুন পাসওয়ার্ড</span><input type="password" name="a" minlength="6" required autocomplete="new-password"></label>
+      <label class="field"><span>আবার নতুন পাসওয়ার্ড</span><input type="password" name="b" minlength="6" required autocomplete="new-password"></label>
+      <button class="btn btn-lg">পরিবর্তন করুন</button></form></div>`;
   document.getElementById('f').onsubmit = async ev => {
     ev.preventDefault();
     const fd = new FormData(ev.target);
@@ -418,17 +458,16 @@ async function reportData(q) {
 
 pages.reports = async () => {
   const cats = await api.categories();
-  const catSel = `<label>খাত<select name="category"><option value="">সব খাত</option>${options(cats, '')}</select></label>`;
-  const btns = `<button class="btn" name="out" value="excel">Excel ডাউনলোড</button><button class="btn ghost" name="out" value="pdf">PDF / প্রিন্ট</button>`;
-  $app.innerHTML = `${flashHtml()}<h1>রিপোর্ট ডাউনলোড</h1><div class="grid3">
-    <form class="card stack"><h2>দৈনিক রিপোর্ট</h2><input type="hidden" name="type" value="day">
-      <label>তারিখ<input type="date" name="date" value="${today()}" required></label>${catSel}${btns}</form>
-    <form class="card stack"><h2>মাসিক রিপোর্ট</h2><input type="hidden" name="type" value="month">
-      <label>মাস<input type="month" name="month" value="${thisMonth()}" required></label>${catSel}${btns}</form>
-    <form class="card stack"><h2>নির্দিষ্ট সময়ের রিপোর্ট</h2><input type="hidden" name="type" value="range">
-      <label>শুরু<input type="date" name="from" value="${thisMonth()}-01" required></label>
-      <label>শেষ<input type="date" name="to" value="${today()}" required></label>${catSel}${btns}</form>
-  </div><p class="muted small">Excel ফাইলে সব খরচ, খাত অনুযায়ী, দিন অনুযায়ী ও সদস্য অনুযায়ী আলাদা শিট থাকবে। PDF এর জন্য "PDF / প্রিন্ট" চাপুন, তারপর "PDF হিসেবে সেভ করুন"।</p>`;
+  const catSel = `<label class="field"><span>খাত</span><select name="category"><option value="">সব খাত</option>${options(cats, '')}</select></label>`;
+  const btns = `<div class="rep-btns"><button class="btn xl-btn" name="out" value="excel">⬇ Excel</button><button class="btn pdf-btn" name="out" value="pdf">📄 PDF</button></div>`;
+  const card = (ico, c, title, sub, body) => `<form class="rep-card" style="--c:${c}"><div class="rep-head"><span class="rep-ico">${ico}</span><div><b>${title}</b><small>${sub}</small></div></div>${body}${catSel}${btns}</form>`;
+  $app.innerHTML = `${flashHtml()}${pageHead('রিপোর্ট', 'Excel বা PDF হিসেবে ডাউনলোড করুন')}
+  <div class="rep-grid">
+    ${card('📅', '#2a78d6', 'দৈনিক রিপোর্ট', 'একটি দিনের সব খরচ', `<input type="hidden" name="type" value="day"><label class="field"><span>তারিখ</span><input type="date" name="date" value="${today()}" required></label>`)}
+    ${card('🗓️', '#1baf7a', 'মাসিক রিপোর্ট', 'পুরো মাসের হিসাব', `<input type="hidden" name="type" value="month"><label class="field"><span>মাস</span><input type="month" name="month" value="${thisMonth()}" required></label>`)}
+    ${card('📆', '#6250d6', 'নির্দিষ্ট সময়', 'যেকোনো তারিখ থেকে তারিখ', `<input type="hidden" name="type" value="range"><div class="two"><label class="field"><span>শুরু</span><input type="date" name="from" value="${thisMonth()}-01" required></label><label class="field"><span>শেষ</span><input type="date" name="to" value="${today()}" required></label></div>`)}
+  </div>
+  <div class="tip-box">💡 Excel ফাইলে সব খরচ, খাত অনুযায়ী, দিন অনুযায়ী ও সদস্য অনুযায়ী আলাদা শিট থাকবে। PDF চাপলে রিপোর্ট খুলবে, সেখান থেকে "PDF হিসেবে সেভ করুন" চাপুন।</div>`;
   $app.querySelectorAll('form').forEach(form => form.onsubmit = async ev => {
     ev.preventDefault();
     const q = new URLSearchParams(new FormData(form));
@@ -508,31 +547,32 @@ pages.members = async () => {
   const users = await api.profiles();
   let emails = {}, sqlReady = true;
   try { (await api.adminListUsers()).forEach(u => emails[u.id] = u); } catch (e) { sqlReady = false; }
-  $app.innerHTML = `${flashHtml()}<h1>সদস্য ব্যবস্থাপনা</h1>
+  const dis = sqlReady ? '' : 'disabled';
+  $app.innerHTML = `${flashHtml()}${pageHead('সদস্য', `${users.filter(u => u.active).length} জন সক্রিয় · মোট ${users.length} জন`)}
   ${sqlReady ? '' : `<div class="flash err">${NEED_SQL}</div>`}
-  <form id="add" class="card">
-    <h2>+ নতুন সদস্য যোগ করুন</h2>
-    <div class="filters">
-      <label>নাম<input name="full_name" required placeholder="যেমন: রহিম উদ্দিন"></label>
-      <label>ইউজারনেম<input name="login" required autocomplete="off" autocapitalize="none" placeholder="যেমন: rahim"></label>
-      <label>পাসওয়ার্ড<input name="password" required minlength="6" autocomplete="new-password" placeholder="কমপক্ষে ৬ অক্ষর"></label>
-      <label>ভূমিকা<select name="role"><option value="member">সদস্য</option><option value="admin">এডমিন</option></select></label>
-      <button class="btn" ${sqlReady ? '' : 'disabled'}>যোগ করুন</button>
-    </div>
-    <p class="muted small">ইউজারনেম ইংরেজি ছোট অক্ষরে দিন (ফাঁকা জায়গা ছাড়া)। সদস্য লগইন করবেন এই ইউজারনেম আর পাসওয়ার্ড দিয়ে। চাইলে পুরো ইমেইলও দিতে পারেন।</p>
-  </form>
-  <div class="card"><h2>সব সদস্য</h2><div class="tablewrap"><table>
-    <thead><tr><th>নাম</th><th>ইউজারনেম</th><th>ভূমিকা</th><th>সক্রিয়</th><th></th><th>নতুন পাসওয়ার্ড</th></tr></thead><tbody>
-    ${users.map(u => `<tr data-id="${u.id}">
-      <td><input name="full_name" value="${h(u.full_name)}"></td>
-      <td class="nw"><code>${h(shortLogin(emails[u.id]?.email)) || '—'}</code>${emails[u.id] && !emails[u.id].last_sign_in_at ? '<br><span class="muted small">এখনো লগইন করেননি</span>' : ''}</td>
-      <td><select name="role" ${u.id === ME.id ? 'disabled' : ''}><option value="member">সদস্য</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>এডমিন</option></select></td>
-      <td><input type="checkbox" name="active" ${u.active ? 'checked' : ''} ${u.id === ME.id ? 'disabled' : ''}></td>
-      <td><button class="btn sm" data-save>সেভ</button></td>
-      <td class="nw"><input name="newpw" placeholder="নতুন পাসওয়ার্ড" autocomplete="new-password" style="min-width:120px;width:140px" ${sqlReady ? '' : 'disabled'}>
-        <button class="btn sm ghost" data-pw ${sqlReady ? '' : 'disabled'}>বদলান</button></td></tr>`).join('')}
-    </tbody></table></div>
-    <p class="muted small">কাউকে বাদ দিতে চাইলে "সক্রিয়" টিক তুলে দিয়ে সেভ করুন। তিনি আর লগইন করতে পারবেন না, কিন্তু তার আগের খরচের হিসাব থেকে যাবে।</p></div>`;
+  <details class="add-box" ${users.length < 2 ? 'open' : ''}>
+    <summary><span class="add-ico">＋</span><span><b>নতুন সদস্য যোগ করুন</b><small>নাম, ইউজারনেম আর পাসওয়ার্ড দিন</small></span></summary>
+    <form id="add" class="add-form">
+      <label class="field"><span>নাম</span><input name="full_name" required placeholder="যেমন: রহিম উদ্দিন"></label>
+      <label class="field"><span>ইউজারনেম</span><input name="login" required autocomplete="off" autocapitalize="none" placeholder="যেমন: rahim"></label>
+      <label class="field"><span>পাসওয়ার্ড</span><input name="password" required minlength="6" autocomplete="new-password" placeholder="কমপক্ষে ৬ অক্ষর"></label>
+      <label class="field"><span>ভূমিকা</span><select name="role"><option value="member">সদস্য</option><option value="admin">এডমিন</option></select></label>
+      <button class="btn" ${dis}>যোগ করুন</button>
+      <p class="muted small full">ইউজারনেম ইংরেজি ছোট অক্ষরে, ফাঁকা জায়গা ছাড়া। চাইলে পুরো ইমেইলও দিতে পারেন।</p>
+    </form>
+  </details>
+  <div class="m-list">${users.map(u => { const me = u.id === ME.id, em = emails[u.id]; return `<div class="m-card ${u.active ? '' : 'off'}" data-id="${u.id}">
+    <div class="m-top"><span class="avatar lg">${h((u.full_name || '?').trim().charAt(0))}</span>
+      <div class="m-id"><input name="full_name" value="${h(u.full_name)}" aria-label="নাম">
+        <small>@${h(shortLogin(em?.email)) || '—'} ${em && !em.last_sign_in_at ? '· <i>এখনো লগইন করেননি</i>' : ''}</small></div>
+      <span class="badge ${u.role === 'admin' ? 'admin' : ''}">${u.role === 'admin' ? 'এডমিন' : 'সদস্য'}</span></div>
+    <div class="m-row">
+      <label class="field inline"><span>ভূমিকা</span><select name="role" ${me ? 'disabled' : ''}><option value="member">সদস্য</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>এডমিন</option></select></label>
+      <div class="sw-wrap"><span>সক্রিয়</span>${switchEl('active', u.active, me ? 'disabled' : '')}</div>
+      <button class="btn sm" data-save>সেভ</button></div>
+    <div class="m-row pw"><input name="newpw" placeholder="🔒 নতুন পাসওয়ার্ড" autocomplete="new-password" ${dis}><button class="btn sm ghost" data-pw ${dis}>বদলান</button></div>
+  </div>`; }).join('')}</div>
+  <div class="tip-box">💡 কাউকে বাদ দিতে "সক্রিয়" বন্ধ করে সেভ করুন। তিনি আর লগইন করতে পারবেন না, কিন্তু আগের খরচের হিসাব থেকে যাবে।</div>`;
 
   document.getElementById('add').onsubmit = async ev => {
     ev.preventDefault();
@@ -546,33 +586,33 @@ pages.members = async () => {
     render();
   };
   $app.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
-    const tr = b.closest('tr'), id = tr.dataset.id;
-    const fields = { full_name: tr.querySelector('[name=full_name]').value.trim() };
-    if (id !== ME.id) { fields.role = tr.querySelector('[name=role]').value; fields.active = tr.querySelector('[name=active]').checked; }
+    const card = b.closest('.m-card'), id = card.dataset.id;
+    const fields = { full_name: card.querySelector('[name=full_name]').value.trim() };
+    if (id !== ME.id) { fields.role = card.querySelector('[name=role]').value; fields.active = card.querySelector('[name=active]').checked; }
     try { await api.updateProfile(id, fields); flash('ok', `${fields.full_name} আপডেট হয়েছে।`); } catch (e) { flash('err', errText(e)); }
     render();
   });
   $app.querySelectorAll('[data-pw]').forEach(b => b.onclick = async () => {
-    const tr = b.closest('tr'), pw = tr.querySelector('[name=newpw]').value, name = tr.querySelector('[name=full_name]').value;
+    const card = b.closest('.m-card'), pw = card.querySelector('[name=newpw]').value, name = card.querySelector('[name=full_name]').value;
     if (pw.length < 6) { flash('err', 'পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।'); return render(); }
-    try { await api.adminSetPassword(tr.dataset.id, pw); flash('ok', `${name}-এর পাসওয়ার্ড বদলানো হয়েছে।`); } catch (e) { flash('err', errText(e)); }
+    try { await api.adminSetPassword(card.dataset.id, pw); flash('ok', `${name}-এর পাসওয়ার্ড বদলানো হয়েছে।`); } catch (e) { flash('err', errText(e)); }
     render();
   });
 };
 
 pages.categories = async () => {
   const cats = await api.categories();
-  $app.innerHTML = `${flashHtml()}<h1>খরচের খাত</h1>
-  <div class="card"><div class="tablewrap"><table><thead><tr><th>আইকন ও খাতের নাম</th><th>সক্রিয়</th><th></th></tr></thead><tbody>
-    ${cats.map(c => `<tr data-id="${c.id}">
-      <td><div class="icon-pick"><input name="icon" value="${h(catIcon(c))}" maxlength="8" aria-label="আইকন"><input name="name" value="${h(c.name)}"></div></td>
-      <td><input type="checkbox" name="active" ${c.active ? 'checked' : ''}></td>
-      <td class="nw"><button class="btn sm" data-save>সেভ</button> <button class="link danger" data-delcat>মুছুন</button></td></tr>`).join('')}
-  </tbody></table></div>
-  <p class="muted small">আইকন বদলাতে বাম পাশের ঘরে মোবাইলের কীবোর্ড থেকে যেকোনো ইমোজি দিন (যেমন 🍛 ⛽ 🧱 👷 🚜 🏢 🔧 💡 🚚), তারপর সেভ চাপুন।<br>যে খাতে কোনো খরচ নেই সেটা "মুছুন" দিয়ে মুছে ফেলা যায়। যে খাতে আগে খরচ লেখা হয়েছে সেটা মোছা যায় না (তাহলে পুরনো হিসাব নষ্ট হবে) — সেটার "সক্রিয়" টিক তুলে দিন, নতুন খরচে আর দেখাবে না।</p></div>
-  <form id="add" class="card filters"><label>নতুন খাত<input name="name" required placeholder="যেমন: গাড়ি মেরামত"></label><button class="btn">যোগ করুন</button></form>`;
+  $app.innerHTML = `${flashHtml()}${pageHead('খরচের খাত', `${cats.filter(c => c.active).length}টি সক্রিয় খাত`)}
+  <form id="add" class="add-inline"><span class="add-ico">＋</span><input name="name" required placeholder="নতুন খাতের নাম"><button class="btn">যোগ করুন</button></form>
+  <div class="c-list">${cats.map(c => `<div class="c-card ${c.active ? '' : 'off'}" data-id="${c.id}" style="--c:${catColor(cats, c.id)}">
+    <input class="c-ico" name="icon" value="${h(catIcon(c))}" maxlength="8" aria-label="আইকন">
+    <input class="c-name" name="name" value="${h(c.name)}" aria-label="খাতের নাম">
+    <div class="c-actions">${switchEl('active', c.active)}<button class="btn sm" data-save>সেভ</button><button class="ia" data-delcat title="মুছুন">🗑️</button></div>
+  </div>`).join('')}</div>
+  <div class="tip-box">💡 আইকনের ঘরে চাপ দিয়ে মোবাইলের কীবোর্ড থেকে যেকোনো ইমোজি দিন (যেমন 🍛 ⛽ 🧱 👷 🚜 🏢 🔧 💡 🚚), তারপর সেভ চাপুন।<br>
+    যে খাতে আগে খরচ লেখা হয়েছে সেটা মোছা যায় না — সুইচ বন্ধ করে সেভ করুন, নতুন খরচে আর দেখাবে না।</div>`;
   $app.querySelectorAll('[data-save]').forEach(b => b.onclick = async () => {
-    const tr = b.closest('tr');
+    const tr = b.closest('.c-card');
     try {
       await api.updateCategory(tr.dataset.id, { name: tr.querySelector('[name=name]').value.trim(), icon: tr.querySelector('[name=icon]').value.trim() || null, active: tr.querySelector('[name=active]').checked });
       flash('ok', 'খাত আপডেট হয়েছে।');
@@ -580,11 +620,11 @@ pages.categories = async () => {
     render();
   });
   $app.querySelectorAll('[data-delcat]').forEach(b => b.onclick = async () => {
-    const tr = b.closest('tr'), name = tr.querySelector('[name=name]').value;
+    const tr = b.closest('.c-card'), name = tr.querySelector('[name=name]').value;
     if (!confirm(`"${name}" খাতটি মুছে ফেলবেন?`)) return;
     try { await api.deleteCategory(tr.dataset.id); flash('ok', `খাত মুছে ফেলা হয়েছে: ${name}`); }
     catch (e) {
-      flash('err', /foreign key|violates/i.test(e?.message || '') ? `"${name}" খাতে আগে খরচ লেখা আছে, তাই মোছা যাবে না। এর বদলে "সক্রিয়" টিক তুলে দিয়ে সেভ করুন।` : errText(e));
+      flash('err', /foreign key|violates/i.test(e?.message || '') ? `"${name}" খাতে আগে খরচ লেখা আছে, তাই মোছা যাবে না। এর বদলে সুইচ বন্ধ করে সেভ করুন।` : errText(e));
     }
     render();
   });
