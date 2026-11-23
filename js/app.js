@@ -298,20 +298,27 @@ const switchEl = (name, on, dis = '') => `<label class="switch"><input type="che
 
 pages.expenses = async () => {
   const p = params();
-  const f = { date: isDate(p.get('date')) ? p.get('date') : '', month: '', categoryId: p.get('category') || '', userId: p.get('user') || '' };
-  if (!f.date) f.month = isMonth(p.get('month')) ? p.get('month') : thisMonth();
-  const [rows, cats, users] = await Promise.all([api.expenses(f), api.categories(), api.profiles()]);
+  const f = { date: isDate(p.get('date')) ? p.get('date') : '', month: '', categoryId: p.get('category') || '', userId: p.get('user') || '', q: (p.get('q') || '').trim().slice(0, 60) };
+  // খোঁজার সময় মাস না দিলে সব সময়ের খরচে খোঁজে
+  if (!f.date) f.month = isMonth(p.get('month')) ? p.get('month') : (f.q ? '' : thisMonth());
+  const cats = await api.categories();
+  if (f.q) f.catIds = cats.filter(c => c.name.toLowerCase().includes(f.q.toLowerCase())).map(c => c.id);
+  const [rows, users] = await Promise.all([api.expenses(f), api.profiles()]);
   const C = h(CFG.CURRENCY), sum = total(rows);
   const groups = [];
   rows.forEach(r => { let g = groups[groups.length - 1]; if (!g || g.date !== r.expense_date) groups.push(g = { date: r.expense_date, rows: [] }); g.rows.push(r); });
   const activeCat = cats.find(c => String(c.id) === String(f.categoryId));
   const activeUser = users.find(u => u.id === f.userId);
-  const periodLabel = f.date ? bnDate(f.date) : bnMonth(f.month);
+  const periodLabel = (f.q ? `"${f.q}" · ` : '') + (f.date ? bnDate(f.date) : f.month ? bnMonth(f.month) : 'সব সময়');
   const qs = o => { const q = new URLSearchParams(); Object.entries(o).forEach(([k, v]) => v && q.set(k, v)); return '#/expenses?' + q; };
-  const base = { date: f.date, month: f.date ? '' : f.month, category: f.categoryId, user: f.userId };
+  const base = { date: f.date, month: f.date ? '' : f.month, category: f.categoryId, user: f.userId, q: f.q };
 
   $app.innerHTML = `${flashHtml()}
   ${pageHead('সব খরচ', 'খাত, সদস্য বা সময় দিয়ে খুঁজুন', '<a class="btn" href="#/new">＋ খরচ যোগ</a>')}
+  <form id="srch" class="search-box" role="search">
+    <span>🔍</span><input name="q" type="search" value="${h(f.q)}" placeholder="খুঁজুন: যেমন সিমেন্ট, ডিজেল, ট্যাক্সি…" enterkeyhint="search" autocomplete="off">
+    ${f.q ? `<a class="clr" href="${qs({ ...base, q: '' })}" aria-label="মুছুন">×</a>` : ''}
+  </form>
   <section class="sum-hero">
     <div><span>${periodLabel}${activeCat ? ' · ' + h(activeCat.name) : ''}${activeUser ? ' · ' + h(activeUser.full_name) : ''}</span>
       <b>${money(sum)} <small>${C}</small></b></div>
@@ -341,13 +348,20 @@ pages.expenses = async () => {
           ${r.receipt_path ? `<button class="ia" data-receipt="${h(r.receipt_path)}" title="রসিদ দেখুন">🧾</button>` : ''}
           ${mine ? `<a class="ia" href="#/edit/${r.id}" title="এডিট">✏️</a><button class="ia" data-del="${r.id}" title="মুছুন">🗑️</button>` : ''}
         </div></div></li>`; }).join('')}</ul></section>`).join('')
-    || `<div class="empty"><span>🗂️</span><b>এই সময়ে কোনো খরচ নেই</b><a class="btn" href="#/new">＋ খরচ যোগ করুন</a></div>`}`;
+    || (f.q ? `<div class="empty"><span>🔍</span><b>"${h(f.q)}" লিখে কোনো খরচ পাওয়া যায়নি</b><a class="btn ghost" href="${qs({ ...base, q: '' })}">খোঁজা বন্ধ করুন</a></div>`
+          : `<div class="empty"><span>🗂️</span><b>এই সময়ে কোনো খরচ নেই</b><a class="btn" href="#/new">＋ খরচ যোগ করুন</a></div>`)}`;
+  document.getElementById('srch').onsubmit = ev => {
+    ev.preventDefault();
+    const v = new FormData(ev.target).get('q').trim();
+    go(qs({ ...base, q: v, month: v && !p.get('month') ? '' : base.month }));
+  };
   document.getElementById('flt').onsubmit = ev => {
     ev.preventDefault();
     const fd = new FormData(ev.target), q = new URLSearchParams();
     if (fd.get('date')) q.set('date', fd.get('date')); else if (fd.get('month')) q.set('month', fd.get('month'));
     if (fd.get('category')) q.set('category', fd.get('category'));
     if (fd.get('user')) q.set('user', fd.get('user'));
+    if (f.q) q.set('q', f.q);
     go('#/expenses?' + q);
   };
   $app.querySelectorAll('[data-receipt]').forEach(b => b.onclick = async () => {

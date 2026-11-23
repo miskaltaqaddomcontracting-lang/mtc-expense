@@ -45,6 +45,11 @@
       if (f.to) q = q.lte('expense_date', f.to);
       if (f.categoryId) q = q.eq('category_id', f.categoryId);
       if (f.userId) q = q.eq('user_id', f.userId);
+      if (f.q) { // বিবরণ বা খাতের নামে খোঁজা
+        const t = '"%' + f.q.replace(/[\\"%_]/g, '') + '%"';
+        const ids = (f.catIds || []).filter(Number.isInteger);
+        q = q.or(`description.ilike.${t}` + (ids.length ? `,category_id.in.(${ids.join(',')})` : ''));
+      }
       const res = await q.order('expense_date', { ascending: false }).order('id', { ascending: false }).limit(10000);
       // deleted-history.sql এখনো চালানো না হলে আগের মতো চলবে
       if (res.error && !noSoftDelete && /deleted_at/.test(res.error.message)) { noSoftDelete = true; return this.expenses(f); }

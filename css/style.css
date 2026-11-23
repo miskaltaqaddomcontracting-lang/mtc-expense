@@ -353,3 +353,9 @@ input:focus,select:focus,textarea:focus{outline:none;background:#fff;border-colo
 .push-banner{position:relative;background:linear-gradient(135deg,#fff7e8,#eef4fb);border:1px solid #f1dcb4;border-radius:18px;margin-bottom:14px}
 .push-banner .push-card{padding-right:34px}
 .push-banner .x{position:absolute;top:4px;right:8px;border:0;background:none;font-size:1.3rem;color:var(--muted);cursor:pointer;padding:4px}
+
+/* ---- search ---- */
+.search-box{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:4px 12px;margin-bottom:12px;box-shadow:var(--shadow)}
+.search-box:focus-within{border-color:#2a78d6;box-shadow:0 0 0 3px rgba(42,120,214,.15)}
+.search-box input{flex:1;border:0;outline:0;background:none;padding:10px 0;font:inherit;color:var(--ink);min-width:0;box-shadow:none}
+.search-box .clr{font-size:1.4rem;color:var(--muted);text-decoration:none;padding:0 4px}
