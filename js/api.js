@@ -69,6 +69,17 @@
     async purgeExpense(id) { must(await sb.from('expenses').delete().eq('id', id)); },
     async monthlyTotals(n = 12) { return must(await sb.rpc('monthly_totals', { max_months: n })); },
 
+    // সম্পূর্ণ ব্যাকআপের জন্য: একটি টেবিলের সব সারি (মুছে ফেলাসহ), ১০০০ করে
+    async allRows(table, order = 'id') {
+      const out = [];
+      for (let from = 0; ; from += 1000) {
+        const rows = must(await sb.from(table).select('*').order(order).range(from, from + 999));
+        out.push(...rows);
+        if (rows.length < 1000) return out;
+      }
+    },
+    async downloadReceipt(path) { return must(await sb.storage.from('receipts').download(path)); },
+
     // রাতের নোটিফিকেশন
     async pushPublicKey() { return must(await sb.from('app_settings').select('value').eq('key', 'vapid_public').maybeSingle())?.value || null; },
     async savePush(sub) {

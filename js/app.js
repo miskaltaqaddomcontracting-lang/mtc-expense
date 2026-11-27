@@ -532,6 +532,128 @@ async function downloadExcel(r) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
+// ---------- সম্পূর্ণ ব্যাকআপ (শুধু এডমিন) ----------
+const loadScript = src => new Promise((ok, bad) => {
+  if (document.querySelector(`script[src="${src}"]`)) return ok();
+  const el = Object.assign(document.createElement('script'), { src, onload: ok, onerror: () => bad(new Error('ইন্টারনেট সংযোগ দেখুন, ফাইল লোড হয়নি।')) });
+  document.head.appendChild(el);
+});
+const CODE_ZIP = 'https://github.com/miskaltaqaddomcontracting-lang/mtc-expense/archive/refs/heads/main.zip';
+
+pages.backup = async () => {
+  let last = '';
+  try { last = localStorage.getItem('mtc-last-backup') || ''; } catch (_) {}
+  $app.innerHTML = `${flashHtml()}${pageHead('সম্পূর্ণ ব্যাকআপ', 'সব হিসাব একটি ZIP ফাইলে আপনার ফোনে')}
+  <div class="rep-card bk-card" style="--c:#1baf7a">
+    <div class="rep-head"><span class="rep-ico">🗄️</span><div><b>ডাটার ব্যাকআপ</b><small>${last ? 'শেষ ব্যাকআপ: ' + h(last) : 'এই ফোনে এখনো ব্যাকআপ নেওয়া হয়নি'}</small></div></div>
+    <ul class="bk-list">
+      <li>📊 সব খরচের Excel (মুছে ফেলা খরচসহ, আলাদা চিহ্ন দেওয়া)</li>
+      <li>🏷️ সব খাত ও 👥 সব সদস্যের তালিকা</li>
+      <li>🧾 সব রসিদের ছবি</li>
+      <li>💾 পুরো ডাটা JSON ফাইলে (দরকার হলে সব আবার ফেরত আনার জন্য)</li>
+    </ul>
+    <label class="bk-opt"><input type="checkbox" id="bk-rec" checked> রসিদের ছবিও নেবো (ফাইল বড় হবে)</label>
+    <button class="btn full" id="bk-go">⬇ সম্পূর্ণ ব্যাকআপ ডাউনলোড</button>
+    <div id="bk-st" class="muted small"></div>
+  </div>
+  <div class="rep-card bk-card" style="--c:#6250d6">
+    <div class="rep-head"><span class="rep-ico">💻</span><div><b>অ্যাপের কোডের ব্যাকআপ</b><small>ওয়েবসাইটের সব ফাইল (GitHub থেকে)</small></div></div>
+    <a class="btn ghost full" href="${CODE_ZIP}">⬇ কোড ZIP ডাউনলোড</a>
+  </div>
+  <div class="tip-box">💡 ডাউনলোড হওয়া ZIP ফাইলটা Google Drive-এ রেখে দিন। মাসে অন্তত একবার, বিশেষ করে মাস শেষে, নতুন ব্যাকআপ নিন।</div>`;
+  const st = document.getElementById('bk-st'), btn = document.getElementById('bk-go');
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const name = await makeFullBackup(document.getElementById('bk-rec').checked, m => st.textContent = m);
+      const when = new Date().toLocaleString('bn-BD', { timeZone: CFG.TIMEZONE, dateStyle: 'medium', timeStyle: 'short' });
+      try { localStorage.setItem('mtc-last-backup', when); } catch (_) {}
+      st.textContent = `✅ ব্যাকআপ ডাউনলোড হয়েছে: ${name}`;
+    } catch (e) { st.textContent = '❌ ' + errText(e); }
+    btn.disabled = false;
+  };
+};
+
+async function makeFullBackup(withReceipts, progress) {
+  progress('ডাটা আনা হচ্ছে…');
+  await loadScript('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
+  const [expenses, categories, profiles] = await Promise.all([api.allRows('expenses'), api.allRows('categories'), api.allRows('profiles', 'created_at')]);
+  let users = [];
+  try { users = await api.adminListUsers(); } catch (_) {}
+  const stamp = new Date().toLocaleDateString('en-CA', { timeZone: CFG.TIMEZONE });
+  const catBy = Object.fromEntries(categories.map(c => [c.id, c.name]));
+  const userBy = Object.fromEntries(profiles.map(u => [u.id, u.full_name]));
+  const emailBy = Object.fromEntries(users.map(u => [u.id, u.email]));
+  const zip = new JSZip();
+
+  zip.file('data/expenses.json', JSON.stringify(expenses, null, 1));
+  zip.file('data/categories.json', JSON.stringify(categories, null, 1));
+  zip.file('data/profiles.json', JSON.stringify(profiles.map(p => ({ ...p, login: emailBy[p.id] || '' })), null, 1));
+
+  progress('Excel তৈরি হচ্ছে…');
+  const wb = new ExcelJS.Workbook();
+  const hdr = ws => { const r = ws.getRow(1); r.font = { bold: true, color: { argb: 'FFFFFFFF' } }; r.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F5F8B' } }; }); ws.views = [{ state: 'frozen', ySplit: 1 }]; };
+  const ex = wb.addWorksheet('All expenses');
+  ex.columns = [
+    { header: 'ID', key: 'id', width: 8 }, { header: 'তারিখ', key: 'date', width: 12 }, { header: 'খাত', key: 'cat', width: 26 },
+    { header: 'বিবরণ', key: 'desc', width: 40 }, { header: 'সদস্য', key: 'user', width: 20 }, { header: `টাকা (${CFG.CURRENCY})`, key: 'amount', width: 14 },
+    { header: 'রসিদ', key: 'rec', width: 34 }, { header: 'অবস্থা', key: 'status', width: 26 }, { header: 'তৈরি', key: 'created', width: 20 },
+  ];
+  const ordered = [...expenses].sort((a, b) => a.expense_date.localeCompare(b.expense_date) || a.id - b.id);
+  ordered.forEach(e => {
+    const row = ex.addRow({ id: e.id, date: e.expense_date, cat: catBy[e.category_id] || '', desc: e.description, user: userBy[e.user_id] || '',
+      amount: Number(e.amount), rec: e.receipt_path ? 'receipts/' + e.receipt_path : '',
+      status: e.deleted_at ? `মুছে ফেলা (${userBy[e.deleted_by] || '?'}, ${String(e.deleted_at).slice(0, 10)})` : 'সক্রিয়',
+      created: String(e.created_at || '').slice(0, 16).replace('T', ' ') });
+    if (e.deleted_at) row.font = { color: { argb: 'FF999999' }, strike: true };
+  });
+  ex.getColumn('amount').numFmt = '#,##0.00';
+  const active = ordered.filter(e => !e.deleted_at);
+  ex.addRow({ desc: 'মোট (মুছে ফেলা বাদে)', amount: active.reduce((t, e) => t + Number(e.amount), 0) }).font = { bold: true };
+  hdr(ex);
+  const mo = wb.addWorksheet('By month');
+  mo.columns = [{ header: 'মাস', key: 'm', width: 12 }, { header: 'এন্ট্রি', key: 'n', width: 10 }, { header: `মোট (${CFG.CURRENCY})`, key: 't', width: 16 }];
+  const months = {};
+  active.forEach(e => { const k = e.expense_date.slice(0, 7); (months[k] = months[k] || { m: k, n: 0, t: 0 }).n++; months[k].t += Number(e.amount); });
+  Object.values(months).forEach(r => mo.addRow({ ...r, t: Math.round(r.t * 100) / 100 })); mo.getColumn('t').numFmt = '#,##0.00'; hdr(mo);
+  const ct = wb.addWorksheet('Categories');
+  ct.columns = [{ header: 'ID', key: 'id', width: 8 }, { header: 'খাত', key: 'name', width: 30 }, { header: 'আইকন', key: 'icon', width: 8 }, { header: 'সক্রিয়', key: 'active', width: 10 }];
+  categories.forEach(c => ct.addRow({ ...c, active: c.active ? 'হ্যাঁ' : 'না' })); hdr(ct);
+  const mb = wb.addWorksheet('Members');
+  mb.columns = [{ header: 'নাম', key: 'name', width: 24 }, { header: 'লগইন', key: 'login', width: 30 }, { header: 'ভূমিকা', key: 'role', width: 10 }, { header: 'সক্রিয়', key: 'active', width: 10 }];
+  profiles.forEach(p => mb.addRow({ name: p.full_name, login: emailBy[p.id] || '', role: p.role === 'admin' ? 'এডমিন' : 'সদস্য', active: p.active ? 'হ্যাঁ' : 'না' })); hdr(mb);
+  zip.file(`MTC-all-expenses-${stamp}.xlsx`, await wb.xlsx.writeBuffer());
+
+  let got = 0, failed = 0;
+  if (withReceipts) {
+    const paths = [...new Set(expenses.map(e => e.receipt_path).filter(Boolean))];
+    for (let i = 0; i < paths.length; i += 4) {
+      await Promise.all(paths.slice(i, i + 4).map(async p => {
+        try { zip.file('receipts/' + p, await api.downloadReceipt(p)); got++; } catch (_) { failed++; }
+      }));
+      progress(`রসিদের ছবি নেওয়া হচ্ছে… ${Math.min(i + 4, paths.length)}/${paths.length}`);
+    }
+  }
+  zip.file('README.txt', [
+    `${CFG.COMPANY} — খরচ হিসাবের সম্পূর্ণ ব্যাকআপ`, `তারিখ: ${stamp}`, '',
+    `খরচ: ${expenses.length}টি (মুছে ফেলা ${expenses.length - active.length}টি) · খাত: ${categories.length}টি · সদস্য: ${profiles.length} জন`,
+    withReceipts ? `রসিদের ছবি: ${got}টি${failed ? ` (${failed}টি পাওয়া যায়নি)` : ''}` : 'রসিদের ছবি: নেওয়া হয়নি', '',
+    `MTC-all-expenses-${stamp}.xlsx — সব খরচ, মাসভিত্তিক মোট, খাত ও সদস্যের তালিকা (Excel-এ খুলুন)`,
+    'data/ — পুরো ডাটা (JSON)। অ্যাপ নতুন করে বসাতে হলে এখান থেকে সব ফেরত আনা যাবে।',
+    'receipts/ — রসিদের ছবি; Excel-এর "রসিদ" কলামে প্রতিটির নাম আছে।', '',
+    `অ্যাপের কোড: ${CODE_ZIP}`,
+    'নোট: সদস্যদের পাসওয়ার্ড ব্যাকআপে থাকে না (নিরাপত্তার জন্য)। নতুন করে বসালে পাসওয়ার্ড আবার দিতে হবে।',
+  ].join('\r\n'));
+
+  progress('ZIP তৈরি হচ্ছে…');
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+  const name = `MTC-backup-${stamp}.zip`;
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  return name;
+}
+
 pages.print = async () => {
   const q = params();
   const r = await reportData(q);
@@ -665,6 +787,7 @@ const ROUTES = [
   [/^\/members$/, () => pages.members(), true],
   [/^\/categories$/, () => pages.categories(), true],
   [/^\/deleted$/, () => pages.deleted(), true],
+  [/^\/backup$/, () => pages.backup(), true],
 ];
 
 const ICONS = {
@@ -679,10 +802,10 @@ const svgI = k => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[k]}</svg>
 function renderNav(route) {
   const link = (href, text, cls = '') => `<a href="${href}" class="${cls} ${route === href.slice(1) ? 'on' : ''}">${text}</a>`;
   document.getElementById('nav').innerHTML = link('#/', 'ড্যাশবোর্ড') + link('#/expenses', 'সব খরচ') + link('#/new', '+ খরচ যোগ', 'btn-nav') +
-    (isAdmin() ? link('#/reports', 'রিপোর্ট') + link('#/members', 'সদস্য') + link('#/categories', 'খাত') + link('#/deleted', 'মুছে ফেলা') : '');
+    (isAdmin() ? link('#/reports', 'রিপোর্ট') + link('#/members', 'সদস্য') + link('#/categories', 'খাত') + link('#/deleted', 'মুছে ফেলা') + link('#/backup', 'ব্যাকআপ') : '');
   document.getElementById('me-name').innerHTML = h(ME.full_name) + (isAdmin() ? ' <span class="tag">এডমিন</span>' : '');
   const tab = (href, icon, text, on) => `<a href="${href}" class="${on ? 'on' : ''}">${svgI(icon)}<span>${text}</span></a>`;
-  const moreOn = ['/more', '/members', '/categories', '/password', '/deleted'].includes(route);
+  const moreOn = ['/more', '/members', '/categories', '/password', '/deleted', '/backup'].includes(route);
   document.getElementById('tabbar').innerHTML =
     tab('#/', 'home', 'হোম', route === '/') + tab('#/expenses', 'list', 'খরচ', route === '/expenses') +
     `<a href="#/new" class="tab-add ${route === '/new' ? 'on' : ''}" aria-label="খরচ যোগ">${svgI('plus')}</a>` +
@@ -792,7 +915,7 @@ pages.more = async () => {
   <div class="profile-card"><span class="avatar lg">${h((ME.full_name || '?').trim().charAt(0))}</span>
     <div><b>${h(ME.full_name)}</b><small>${isAdmin() ? 'এডমিন' : 'সদস্য'} · ${h(CFG.COMPANY)}</small></div></div>
   <div class="more-list">
-    ${isAdmin() ? item('#/reports', '📊', 'রিপোর্ট', 'দৈনিক/মাসিক Excel ও PDF') + item('#/members', '👥', 'সদস্য', 'সদস্য যোগ, পাসওয়ার্ড বদল') + item('#/categories', '🏷️', 'খাত', 'খাত যোগ, আইকন, বন্ধ করা') + item('#/deleted', '🗑️', 'মুছে ফেলা খরচ', 'কে কী মুছেছে, ফেরত আনুন') : ''}
+    ${isAdmin() ? item('#/reports', '📊', 'রিপোর্ট', 'দৈনিক/মাসিক Excel ও PDF') + item('#/members', '👥', 'সদস্য', 'সদস্য যোগ, পাসওয়ার্ড বদল') + item('#/categories', '🏷️', 'খাত', 'খাত যোগ, আইকন, বন্ধ করা') + item('#/deleted', '🗑️', 'মুছে ফেলা খরচ', 'কে কী মুছেছে, ফেরত আনুন') + item('#/backup', '🗄️', 'সম্পূর্ণ ব্যাকআপ', 'সব ডাটা, রসিদ ও Excel এক ZIP-এ') : ''}
     ${item('#/password', '🔑', 'পাসওয়ার্ড পরিবর্তন', 'নিজের পাসওয়ার্ড বদলান')}
   </div>
   <div class="more-list">${pushCardHtml()}</div>
