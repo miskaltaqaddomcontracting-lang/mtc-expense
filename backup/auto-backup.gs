@@ -1,10 +1,16 @@
 /**
- * MTC খরচ হিসাব — জিমেইলে স্বয়ংক্রিয় ব্যাকআপ (Google Apps Script)
+ * MTC খরচ হিসাব — Google Drive ও জিমেইলে স্বয়ংক্রিয় ফাইল (Google Apps Script)
  *
- * এটি আপনার নিজের Google অ্যাকাউন্টে চলে (script.google.com)।
- * প্রতিদিন নির্দিষ্ট সময়ে Supabase থেকে সব খরচ পড়ে:
- *   ১) Excel-এ খোলা যায় এমন CSV ফাইল, ২) পুরো ডাটার JSON ফাইল
- * আপনার জিমেইলে পাঠায় এবং Google Drive-এর "MTC Backup" ফোল্ডারে রাখে।
+ * এটি আপনার নিজের Google অ্যাকাউন্টে চলে (script.google.com)। দুটি কাজ করে:
+ *
+ * ১) দৈনিক খরচের ফাইল — প্রতিদিন রাত ১১:৩০-এর দিকে সেদিনের সব খরচ একটি Google Sheet-এ
+ *    তারিখের নামে Drive-এ সেভ করে:  MTC খরচ / 2026-11 / MTC খরচ 2026-11-28
+ *    আর একই ফাইল Excel হিসেবে আপনার জিমেইলে পাঠায় (EMAIL_DAILY = no দিলে পাঠাবে না)।
+ *
+ * ২) সাপ্তাহিক পূর্ণ ব্যাকআপ — প্রতি শুক্রবার সব খরচের CSV ও পুরো ডাটার JSON
+ *    Drive-এর "MTC খরচ / Backup" ফোল্ডারে রাখে ও জিমেইলে পাঠায়।
+ *
+ * চালু করতে: কোড পেস্ট → Script Properties ঠিক করুন → setupAutomatic একবার Run।
  *
  * পাসওয়ার্ড কোডে লিখবেন না — Project Settings → Script Properties-এ রাখুন:
  *   SUPABASE_URL   = https://xxxx.supabase.co
@@ -12,17 +18,19 @@
  *   BACKUP_EMAIL   = backup@mtc.local   (এই কাজের জন্য আলাদা একটি সক্রিয় সদস্য)
  *   BACKUP_PASSWORD= সেই সদস্যের পাসওয়ার্ড
  *   SEND_TO        = (ঐচ্ছিক) কোন জিমেইলে যাবে; খালি থাকলে আপনার নিজের জিমেইলে
+ *   EMAIL_DAILY    = (ঐচ্ছিক) no লিখলে দৈনিক ফাইল শুধু Drive-এ থাকবে, ইমেইল যাবে না
  */
 
-var DRIVE_FOLDER = 'MTC Backup';
+var ROOT_FOLDER = 'MTC খরচ';
 var TZ = 'Asia/Riyadh';
+var CURRENCY = 'SAR';
 
 function props_() {
   var p = PropertiesService.getScriptProperties().getProperties();
   ['SUPABASE_URL', 'SUPABASE_KEY', 'BACKUP_EMAIL', 'BACKUP_PASSWORD'].forEach(function (k) {
     if (!p[k]) throw new Error('Script Property নেই: ' + k);
   });
-  p.SUPABASE_URL = p.SUPABASE_URL.replace(/\/+$/, '').replace(/\/rest\/v1$/, '');
+  p.SUPABASE_URL = p.SUPABASE_URL.trim().replace(/\/+$/, '').replace(/\/rest\/v1$/, '');
   return p;
 }
 
@@ -65,7 +73,94 @@ function csvCell_(v) {
   return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
 }
 
-/** এটাই মূল ব্যাকআপ — হাতে চালাতে চাইলে এটা Run করুন */
+// ফোল্ডার খোঁজে, না থাকলে তৈরি করে:  folder_(['MTC খরচ', '2026-11'])
+function folder_(names) {
+  var f = DriveApp.getRootFolder();
+  names.forEach(function (n) {
+    var it = f.getFoldersByName(n);
+    f = it.hasNext() ? it.next() : f.createFolder(n);
+  });
+  return f;
+}
+
+function sendTo_(p) { return p.SEND_TO || Session.getEffectiveUser().getEmail(); }
+
+/** ১) দৈনিক খরচের ফাইল। হাতে চালালে আজকের (দুপুর ১২টার আগে চালালে গতকালের) ফাইল তৈরি হবে। */
+function dailyReport() {
+  var now = new Date();
+  var hour = Number(Utilities.formatDate(now, TZ, 'H'));
+  // মাঝরাতের পরে চালু হলেও আগের দিনের হিসাব ধরবে
+  var day = hour < 12 ? new Date(now.getTime() - 24 * 3600 * 1000) : now;
+  makeDailyFile_(Utilities.formatDate(day, TZ, 'yyyy-MM-dd'));
+}
+
+/** নির্দিষ্ট তারিখের ফাইল বানাতে: makeDailyFileFor() ফাংশনে তারিখ বদলে Run করুন */
+function makeDailyFileFor() { makeDailyFile_('2026-11-28'); }
+
+function makeDailyFile_(date) {
+  var p = props_();
+  var token = login_(p);
+  var rows = fetchAll_(p, token, 'expenses?select=*,category:categories(name),member:profiles!user_id(full_name)' +
+    '&expense_date=eq.' + date + '&order=id.asc');
+  var name = function (r, k) { return r[k] ? r[k][k === 'category' ? 'name' : 'full_name'] : ''; };
+  var total = rows.reduce(function (t, r) { return t + Number(r.amount); }, 0);
+
+  var folder = folder_([ROOT_FOLDER, date.slice(0, 7)]);
+  var title = 'MTC খরচ ' + date;
+  // একই দিনের পুরোনো ফাইল থাকলে সরিয়ে নতুনটা রাখে
+  var old = folder.getFilesByName(title);
+  while (old.hasNext()) old.next().setTrashed(true);
+
+  var ss = SpreadsheetApp.create(title);
+  var sh = ss.getActiveSheet().setName('খরচ');
+  sh.getRange('A1').setValue('Misk Al Taqaddom Contracting (MTC) — দৈনিক খরচ').setFontWeight('bold').setFontSize(14);
+  sh.getRange('A2').setValue('তারিখ: ' + date + '   ·   মোট এন্ট্রি: ' + rows.length).setFontWeight('bold');
+  var data = [['#', 'খাত', 'বিবরণ', 'সদস্য', 'টাকা (' + CURRENCY + ')', 'রসিদ']];
+  rows.forEach(function (r, i) {
+    data.push([i + 1, name(r, 'category'), r.description || '', name(r, 'member'), Number(r.amount), r.receipt_path ? 'আছে' : '']);
+  });
+  data.push(['', '', 'মোট', '', total, '']);
+  sh.getRange(4, 1, data.length, 6).setValues(data);
+  sh.getRange(4, 1, 1, 6).setFontWeight('bold').setFontColor('#ffffff').setBackground('#1f5f8b');
+  sh.getRange(4 + data.length - 1, 1, 1, 6).setFontWeight('bold').setBackground('#eef4fb');
+  sh.getRange(5, 5, data.length - 1, 1).setNumberFormat('#,##0.00');
+  sh.setColumnWidth(1, 40); sh.setColumnWidth(2, 180); sh.setColumnWidth(3, 260); sh.setColumnWidth(4, 140); sh.setColumnWidth(5, 110);
+  sh.setFrozenRows(4);
+
+  // খাত ও সদস্য অনুযায়ী মোট
+  var sum = function (key) {
+    var m = {};
+    rows.forEach(function (r) { var k = name(r, key) || '—'; m[k] = (m[k] || 0) + Number(r.amount); });
+    return Object.keys(m).sort(function (a, b) { return m[b] - m[a]; }).map(function (k) { return [k, m[k]]; });
+  };
+  var s2 = ss.insertSheet('সারাংশ');
+  var cat = [['খাত অনুযায়ী', 'টাকা']].concat(sum('category'));
+  var mem = [['সদস্য অনুযায়ী', 'টাকা']].concat(sum('member'));
+  s2.getRange(1, 1, cat.length, 2).setValues(cat);
+  s2.getRange(1, 4, mem.length, 2).setValues(mem);
+  s2.getRange('A1:B1').setFontWeight('bold').setFontColor('#ffffff').setBackground('#1f5f8b');
+  s2.getRange('D1:E1').setFontWeight('bold').setFontColor('#ffffff').setBackground('#1f5f8b');
+  s2.getRange('B:B').setNumberFormat('#,##0.00'); s2.getRange('E:E').setNumberFormat('#,##0.00');
+  s2.setColumnWidth(1, 200); s2.setColumnWidth(4, 160);
+  SpreadsheetApp.flush();
+  DriveApp.getFileById(ss.getId()).moveTo(folder);
+
+  if (String(p.EMAIL_DAILY || '').toLowerCase() !== 'no') {
+    var xlsx = UrlFetchApp.fetch('https://docs.google.com/spreadsheets/d/' + ss.getId() + '/export?format=xlsx', {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }
+    }).getBlob().setName(title + '.xlsx');
+    MailApp.sendEmail({
+      to: sendTo_(p),
+      subject: title + ' — মোট ' + total.toFixed(2) + ' ' + CURRENCY,
+      body: 'তারিখ: ' + date + '\nমোট এন্ট্রি: ' + rows.length + '\nমোট খরচ: ' + total.toFixed(2) + ' ' + CURRENCY +
+        '\n\nফাইলটি আপনার Google Drive-এ আছে: ' + ROOT_FOLDER + ' / ' + date.slice(0, 7) + ' / ' + title +
+        '\n' + ss.getUrl(),
+      attachments: [xlsx]
+    });
+  }
+}
+
+/** ২) পূর্ণ ব্যাকআপ — সব খরচের CSV ও পুরো ডাটার JSON (হাতে চালাতে চাইলে এটা Run করুন) */
 function runBackup() {
   var p = props_();
   var token = login_(p);
@@ -80,55 +175,39 @@ function runBackup() {
   var lines = [['তারিখ', 'খাত', 'সদস্য', 'বিবরণ', 'টাকা', 'রসিদ আছে', 'ID'].join(',')];
   expenses.forEach(function (e) {
     total += Number(e.amount) || 0;
-    lines.push([
-      e.expense_date,
-      e.category ? e.category.name : '',
-      e.member ? e.member.full_name : '',
-      e.description,
-      e.amount,
-      e.receipt_path ? 'হ্যাঁ' : '',
-      e.id
-    ].map(csvCell_).join(','));
+    lines.push([e.expense_date, e.category ? e.category.name : '', e.member ? e.member.full_name : '',
+      e.description, e.amount, e.receipt_path ? 'হ্যাঁ' : '', e.id].map(csvCell_).join(','));
   });
-  // ﻿ দিলে Excel বাংলা লেখা ঠিকমতো দেখায়
-  var csv = Utilities.newBlob('﻿' + lines.join('\r\n'), 'text/csv', 'MTC-expenses-' + stamp + '.csv');
+  // \uFEFF দিলে Excel বাংলা লেখা ঠিকমতো দেখায়
+  var csv = Utilities.newBlob('\uFEFF' + lines.join('\r\n'), 'text/csv', 'MTC-expenses-' + stamp + '.csv');
   var json = Utilities.newBlob(JSON.stringify({
     backup_date: stamp, expenses: expenses, categories: categories, profiles: profiles
   }, null, 1), 'application/json', 'MTC-full-backup-' + stamp + '.json');
 
-  // Google Drive-এ রাখা
-  var it = DriveApp.getFoldersByName(DRIVE_FOLDER);
-  var folder = it.hasNext() ? it.next() : DriveApp.createFolder(DRIVE_FOLDER);
+  var folder = folder_([ROOT_FOLDER, 'Backup']);
   folder.createFile(csv);
   folder.createFile(json);
 
-  // জিমেইলে পাঠানো
-  var to = p.SEND_TO || Session.getEffectiveUser().getEmail();
   MailApp.sendEmail({
-    to: to,
-    subject: 'MTC খরচ ব্যাকআপ — ' + stamp,
-    body: 'MTC খরচ হিসাবের স্বয়ংক্রিয় ব্যাকআপ।\n\n' +
-      'মোট এন্ট্রি: ' + expenses.length + '\n' +
-      'মোট খরচ: ' + total.toFixed(2) + '\n' +
+    to: sendTo_(p),
+    subject: 'MTC পূর্ণ ব্যাকআপ — ' + stamp,
+    body: 'MTC খরচ হিসাবের সাপ্তাহিক পূর্ণ ব্যাকআপ।\n\n' +
+      'মোট এন্ট্রি: ' + expenses.length + '\nমোট খরচ: ' + total.toFixed(2) + ' ' + CURRENCY + '\n' +
       'খাত: ' + categories.length + ', সদস্য: ' + profiles.length + '\n\n' +
       'CSV ফাইলটি Excel-এ খুলুন। JSON ফাইলটি পুরো ডাটা ফেরত আনার জন্য রেখে দিন।\n' +
-      'একই ফাইল Google Drive-এর "' + DRIVE_FOLDER + '" ফোল্ডারেও আছে।',
+      'একই ফাইল Google Drive-এর "' + ROOT_FOLDER + ' / Backup" ফোল্ডারেও আছে।',
     attachments: [csv, json]
   });
 }
 
-/** একবার Run করুন: প্রতিদিন রাত ১১টার দিকে নিজে থেকে ব্যাকআপ চালু হবে */
-function setupDailyBackup() {
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'runBackup') ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger('runBackup').timeBased().everyDays(1).atHour(23).inTimezone(TZ).create();
+/** একবার Run করুন: প্রতিদিন রাত ১১:৩০-এর দিকে দৈনিক ফাইল, আর প্রতি শুক্রবার পূর্ণ ব্যাকআপ চালু হবে */
+function setupAutomatic() {
+  ScriptApp.getProjectTriggers().forEach(function (t) { ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('dailyReport').timeBased().everyDays(1).atHour(23).nearMinute(30).inTimezone(TZ).create();
+  ScriptApp.newTrigger('runBackup').timeBased().onWeekDay(ScriptApp.WeekDay.FRIDAY).atHour(22).inTimezone(TZ).create();
 }
 
-/** সাপ্তাহিক চাইলে setupDailyBackup-এর বদলে এটা Run করুন (প্রতি শুক্রবার) */
-function setupWeeklyBackup() {
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'runBackup') ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger('runBackup').timeBased().onWeekDay(ScriptApp.WeekDay.FRIDAY).atHour(23).inTimezone(TZ).create();
+/** সব স্বয়ংক্রিয় কাজ বন্ধ করতে এটা Run করুন */
+function stopAutomatic() {
+  ScriptApp.getProjectTriggers().forEach(function (t) { ScriptApp.deleteTrigger(t); });
 }
